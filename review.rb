@@ -51,12 +51,12 @@ else
 end
 
 # Helper: send a chat request and return the model's reply.
-def call_chat(client, messages)
+def call_chat(client, messages, reasoning_effort: 'high')
     response = client.chat(
       parameters: {
         model: MODEL,
         messages:,
-        reasoning_effort: 'high'
+        reasoning_effort: reasoning_effort
       }
     )
     response.dig('choices', 0, 'message', 'content')
@@ -72,7 +72,7 @@ def generate_code_questions(client, file_content)
     { 'role' => 'user',
       'content' => "Please analyze the following Ruby code and output any Code Questions (CQs) as described. Include for each CQ a 'question', an 'example', and a 'regex'. Do not include any extra text - only output valid JSON.\n\n#{file_content}" }
   ]
-  response_text = call_chat(client, messages)
+  response_text = call_chat(client, messages, reasoning_effort: 'medium')
   begin
     cq_array = JSON.parse(response_text)
     # Validate that we have an array of objects with all required keys.
@@ -119,17 +119,21 @@ files.each do |filepath|
   cqs = generate_code_questions(client, file_content)
   puts "Found #{cqs.length} Code Questions in #{filepath}."
 
-  cqs.each do |cq|
+  cqs.each_with_index do |cq, i|
+    puts "trying cq #{i}"
     cq_result = { question: cq['question'], example: cq['example'], regex: cq['regex'], status: 'unresolved',
                   resolved_snippet: nil }
 
     # Use the provided regex to search the codebase using grep.
     matching_files = search_files_by_regex(codebase_root, cq['regex'])
     if matching_files.empty?
+      puts "no matching files for cq #{i}"
       cq_result[:status] = 'unresolved (no matching files found)'
       file_result[:cqs] << cq_result
       next
     end
+
+    puts "asking for file choice"
 
     # Ask the model to decide which file from the list to use.
     files_list_str = matching_files.join("\n")
@@ -141,11 +145,14 @@ files.each do |filepath|
     decision_response = call_chat(client, decision_messages)
     chosen_file = decision_response ? decision_response.strip : ''
 
+
     if chosen_file.downcase == 'none' || !matching_files.include?(chosen_file)
+      puts "no chosenfile for cq #{i}"
       cq_result[:status] = 'unresolved (model did not select a valid file)'
       file_result[:cqs] << cq_result
       next
     end
+    puts "chosen file for cq #{i} is #{chosen_file.downcase}"
 
     # Read the chosen file's content.
     begin
@@ -157,13 +164,14 @@ files.each do |filepath|
       next
     end
 
+    puts "extracting code snippet"
     # Ask the model to extract the snippet that resolves the CQ.
     extraction_prompt = "The following is the content of the file #{chosen_file}:\n\n#{chosen_file_content}\n\nFor the Code Question:\n\"#{cq['question']}\"\nPlease extract and provide the snippet of code (or the full file, if necessary) that resolves the security concern. If you cannot determine a relevant snippet, simply reply with 'none'."
     extraction_messages = [
       { 'role' => 'system', 'content' => SYSTEM_PROMPT },
       { 'role' => 'user', 'content' => extraction_prompt }
     ]
-    snippet_response = call_chat(client, extraction_messages)
+    snippet_response = call_chat(client, extraction_messages, reasoning_effort: 'medium')
     snippet = snippet_response ? snippet_response.strip : ''
 
     if snippet.downcase == 'none' || snippet.empty?
