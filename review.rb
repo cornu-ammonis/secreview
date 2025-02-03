@@ -5,14 +5,21 @@ require 'openai'
 require 'find'
 require 'json'
 require 'shellwords' # Needed for safely escaping shell parameters
+require 'open3'
+
 
 # CONSTANTS – adjust these as needed.
 # SYSTEM_PROMPT includes instructions for generating Code Questions (CQs).
 SYSTEM_PROMPT = "You are a security code reviewer for Ruby applications. For each file you are given, if you detect a potential security issue that might depend on code elsewhere in the codebase, generate a Code Question (CQ). Each CQ must include:
 1. \"question\": A clear explanation of the security concern (with logical rationale and impact).
 2. \"example\": An excerpt from the provided file that raised the concern.
-3. \"regex\": A Ruby regular expression that can be used to locate related code (for example, a method definition).
-Return only a JSON array of objects with these three keys. If there are no applicable issues, return an empty JSON array
+3. \"regex\": A Ruby regular expression that can be used to locate related code (for example, the method definition containing the code we need to see).
+Return only a JSON array of objects with these three keys. If there are no applicable issues, return an empty JSON array. 
+
+Example: we call a method search_by_ids(params[:id_1], params[:id_2]) and we want to see that. so we make a regex that would match on 'def search_by_ids' or 'def self.search_by_ids'
+  
+Think carefully about the regex, you'd rather go broad (like anything that matches def method_name or def self.method_name without worrying about arguments).
+We will take a list of all files that match the regex and then let you choose which one to inspect, so it's better to have too many hits than 0 hits.
 
 After we resolve the code for your code questions, you will need to do a final review on the file.
 List any additional security concerns that you observe (no longer JSON format, use markdown or bullets). If code questions are unresolved, flag them, but you still must provide a final analysis and also analyze things that did not involved code questions.
@@ -87,16 +94,26 @@ def generate_code_questions(client, file_content)
   end
 end
 
-# Helper: Search the codebase using a grep command instead of opening every file.
-def search_files_by_regex(codebase_root, regex_str)
-  # Escape the regex and the codebase_root to prevent shell issues.
+def search_files_by_regex(codebase_root, regex_str)  
+  # Escape the regex and the codebase_root to prevent shell issues
   escaped_regex = Shellwords.escape(regex_str)
   escaped_path  = Shellwords.escape(codebase_root)
-  # Construct the grep command: -r to search recursively, -l to list only file names, -E for extended regex.
+  
+  # Construct the grep command: -r to search recursively, -l to list only file names, -E for extended regex
   command = "grep -rEl #{escaped_regex} #{escaped_path}"
-  # Execute the grep command.
-  output = `#{command}`
-  output.split("\n")
+  puts "executing command #{command}"
+  # Execute the grep command using Open3 for better error handling
+  begin
+    stdout, stderr, status = Open3.capture3(command)
+    
+    if status.success?
+      stdout.split("\n")
+    else
+      raise "Grep command failed: #{stderr} #{stdout}"
+    end
+  rescue StandardError => e
+    raise "Error executing search: #{e.message}"
+  end
 end
 
 # Process each file and record review results.
@@ -120,7 +137,7 @@ files.each do |filepath|
   puts "Found #{cqs.length} Code Questions in #{filepath}."
 
   cqs.each_with_index do |cq, i|
-    puts "trying cq #{i}"
+    puts "trying cq #{i} with regex #{cq['regex']}"
     cq_result = { question: cq['question'], example: cq['example'], regex: cq['regex'], status: 'unresolved',
                   resolved_snippet: nil }
 
@@ -137,14 +154,14 @@ files.each do |filepath|
 
     # Ask the model to decide which file from the list to use.
     files_list_str = matching_files.join("\n")
-    decision_prompt = "For the Code Question:\n\"#{cq['question']}\"\nI searched the codebase using your regex (#{cq['regex']}) and found these files:\n#{files_list_str}\nPlease respond with the single file path (from the list above) which best contains the code resolving this question. If none of these files are applicable, please reply with 'none'."
+    decision_prompt = "For the Code Question:\n\"#{cq['question']}\"\nI searched the codebase using your regex (#{cq['regex']}) and found these files:\n#{files_list_str}\nPlease respond with the full file path (from the list above) which best contains the code resolving this question. If none of these files are applicable, please reply with 'none'. Here is the original file under review: \n\n #{file_content}"
     decision_messages = [
       { 'role' => 'system', 'content' => SYSTEM_PROMPT },
       { 'role' => 'user', 'content' => decision_prompt }
     ]
-    decision_response = call_chat(client, decision_messages)
+    decision_response = call_chat(client, decision_messages, reasoning_effort: 'medium')
     chosen_file = decision_response ? decision_response.strip : ''
-
+    puts "chosen file #{chosen_file}"
 
     if chosen_file.downcase == 'none' || !matching_files.include?(chosen_file)
       puts "no chosenfile for cq #{i}"
