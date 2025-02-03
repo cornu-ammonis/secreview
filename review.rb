@@ -34,7 +34,8 @@ if ARGV.empty?
 end
 
 input_path = ARGV[0]
-codebase_root = File.directory?(input_path) ? input_path : File.dirname(input_path)
+codebase_root_arg = ARGV[1]
+codebase_root = File.directory?(codebase_root_arg) ? codebase_root_arg : File.dirname(codebase_root_arg)
 
 # Gather all files (if a directory, search recursively; if a file, process it alone).
 files = []
