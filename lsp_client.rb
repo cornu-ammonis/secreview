@@ -1,5 +1,6 @@
 require "socket"
 require "json"
+require "uri"
 
 # The LSPClient class encapsulates the minimal JSON-RPC LSP client.
 # It provides methods for sending requests/notifications and reading responses.
@@ -100,6 +101,40 @@ class LSPClient
   end
 
   # Optionally add more high-level methods for other LSP functionality.
+  # 
+  
+  def get_workspace_snippet(query)
+    r = workspace_symbol(query)
+    symbol = r["result"].first
+    location = symbol["location"]
+  
+    # Parse the file URI to a local file path.
+    file_path = URI(location["uri"]).path
+    
+    # Extract the range (LSP uses zero-based indexing)
+    range     = location["range"]
+    start_line    = range["start"]["line"]
+    start_char    = range["start"]["character"]
+    end_line      = range["end"]["line"]
+    end_char      = range["end"]["character"]
+    
+    # Read the whole file as an array of lines.
+    file_lines = File.readlines(file_path, chomp: false)
+    
+    # Extract the snippet.
+    if start_line == end_line
+      snippet = file_lines[start_line][start_char...end_char]
+    else
+      # First line: from the starting character to the end of the line.
+      snippet = file_lines[start_line][start_char..-1]
+      # Middle lines: add full lines.
+      snippet += file_lines[(start_line + 1)...end_line].join if end_line - start_line > 1
+      # Last line: from the beginning until the end character.
+      snippet += file_lines[end_line][0...end_char]
+    end
+    
+    snippet
+  end
 end
 
 # If the file is executed directly, run an interactive demo.
