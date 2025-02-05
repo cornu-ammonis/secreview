@@ -11,8 +11,8 @@ require_relative 'lsp_client'
 
 # CONSTANTS – adjust these as needed.
 # SYSTEM_PROMPT includes instructions for generating Code Questions (CQs).
-SYSTEM_PROMPT_QUESTIONS = "You are an expert security code reviewer for Ruby on Rails applications. For each file you are given, if you detect a potential security issue that might depend on code that is not visible in the current file, generate a Code Question (CQ). You may generate up to 10 CQs. Each CQ must include:
-1. \"question\": A clear explanation of the security concern (with logical rationale and impact).
+SYSTEM_PROMPT_QUESTIONS = "You are an expert security code reviewer for Ruby on Rails applications. For each file you are given, if you detect a potential security issue that might depend on code that is not visible in the current file, generate a Code Search Request (CSR). You may generate up to 10 CSR. Each CSR must include:
+1. \"question\": A clear explanation of the security concern (with logical rationale and impact) and what code, not present in the current file, that you need to see to resolve it.
 2. \"example\": An excerpt from the provided file that raised the concern.
 3. \"workspace_symbol\": An LSP workspace symbol query to find the method or class elsewhere in the codebase to resolve the concern. Example: if you want to see a method called like example.some_method, simply put some_method in this field. Or similarly you might search for a classname. 
   
@@ -54,7 +54,7 @@ def generate_code_questions(client, file_content)
   messages = [
     { 'role' => 'system', 'content' => SYSTEM_PROMPT_QUESTIONS },
     { 'role' => 'user',
-      'content' => "Please analyze the following Ruby code and output any Code Questions (CQs) as described. Include for each CQ a 'question', an 'example', and a 'workspace_symbol'. Do not include any extra text - only output valid JSON.\n\n#{file_content}" }
+      'content' => "Please analyze the following Ruby code and output any Code Search Requests (CSRs) as described. Include for each CSR a 'question', an 'example', and a 'workspace_symbol'. Do not include any extra text - only output valid JSON.\n\n#{file_content}" }
   ]
   response_text = call_chat(client, messages, reasoning_effort: 'high')
   begin
@@ -98,7 +98,7 @@ end
 puts "initializing lsp client...."
 lsp_client = LSPClient.new(
  host: "localhost",
- port: 7658,
+ port: 8123,
  project_root: "file:///Users/andrew/Documents/aha/aha-app"
 )
 lsp_client.initialize_handshake
@@ -199,3 +199,6 @@ while (input_path = gets.chomp) && input_path != "exit"
 
   puts "Enhanced security review complete. Results saved to #{OUTPUT_FILE}."
 end
+
+puts "disconnecting LSP client"
+lsp_client.disconnect
