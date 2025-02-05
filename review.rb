@@ -11,7 +11,7 @@ require_relative 'lsp_client'
 
 # CONSTANTS – adjust these as needed.
 # SYSTEM_PROMPT includes instructions for generating Code Questions (CQs).
-SYSTEM_PROMPT_QUESTIONS = "You are an expert security code reviewer for Ruby on Rails applications. For each file you are given, if you detect a potential security issue that might depend on code that is not visible in the current file, generate a Code Question (CQ). You may generate up to 5 CQs. Each CQ must include:
+SYSTEM_PROMPT_QUESTIONS = "You are an expert security code reviewer for Ruby on Rails applications. For each file you are given, if you detect a potential security issue that might depend on code that is not visible in the current file, generate a Code Question (CQ). You may generate up to 10 CQs. Each CQ must include:
 1. \"question\": A clear explanation of the security concern (with logical rationale and impact).
 2. \"example\": An excerpt from the provided file that raised the concern.
 3. \"workspace_symbol\": An LSP workspace symbol query to find the method or class elsewhere in the codebase to resolve the concern. Example: if you want to see a method called like example.some_method, simply put some_method in this field. Or similarly you might search for a classname. 
@@ -116,8 +116,7 @@ while (input_path = gets.chomp) && input_path != "exit"
   elsif File.file?(input_path)
     files << input_path
   else
-    puts 'The specified path is not a file or directory.'
-    exit 1
+    puts 'The specified path is not a file or directory, please try again'
   end
 
   # Process each file and record review results.
@@ -157,7 +156,7 @@ while (input_path = gets.chomp) && input_path != "exit"
       else
         cq_result[:status] = 'resolved'
         cq_result[:resolved_snippet] = cq_snippet
-        all_resolved_snippets << cq_snippet
+        all_resolved_snippets << "Question: " + cq['question'] + "\n Snippet: \n" + cq_snippet
       end
 
       file_result[:cqs] << cq_result
