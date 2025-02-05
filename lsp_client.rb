@@ -1,3 +1,4 @@
+#!/usr/bin/env ruby
 require "socket"
 require "json"
 require "uri"
@@ -100,9 +101,7 @@ class LSPClient
     read_message
   end
 
-  # Optionally add more high-level methods for other LSP functionality.
-  # 
-  
+  # Example high-level API to retrieve a snippet from the workspace based on a symbol query.
   def get_workspace_snippet(query)
     r = workspace_symbol(query)
     symbol = r["result"].first
@@ -134,6 +133,18 @@ class LSPClient
     end
     
     snippet
+  end
+
+  # Disconnects from the LSP server gracefully.
+  #
+  # This method closes the underlying socket connection without sending
+  # a shutdown or exit notification. This ensures that the LSP server remains
+  # in its initialized state, allowing for future reconnections.
+  def disconnect
+    if @socket && !@socket.closed?
+      @socket.close
+      @socket = nil
+    end
   end
 end
 
@@ -172,5 +183,8 @@ if __FILE__ == $PROGRAM_NAME
     end
     puts "Type another query (or 'exit'):"
   end
-  puts "Goodbye!"
+
+  # Disconnect gracefully from the LSP server.
+  client.disconnect
+  puts "Disconnected from the LSP server gracefully. Goodbye!"
 end
