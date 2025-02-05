@@ -11,18 +11,21 @@ require_relative 'lsp_client'
 
 # CONSTANTS – adjust these as needed.
 # SYSTEM_PROMPT includes instructions for generating Code Questions (CQs).
-SYSTEM_PROMPT = "You are a security code reviewer for Ruby applications. For each file you are given, if you detect a potential security issue that might depend on code elsewhere in the codebase, generate a Code Question (CQ). You may generate up to 5 CQs. Each CQ must include:
+SYSTEM_PROMPT_QUESTIONS = "You are an expert security code reviewer for Ruby on Rails applications. For each file you are given, if you detect a potential security issue that might depend on code that is not visible in the current file, generate a Code Question (CQ). You may generate up to 5 CQs. Each CQ must include:
 1. \"question\": A clear explanation of the security concern (with logical rationale and impact).
 2. \"example\": An excerpt from the provided file that raised the concern.
-3. \"workspace_symbol\": An LSP workspace symbol query to find the method or class that resolves the concern. Example: if you want to see a method called like example.some_method, simply put some_method in this field. 
+3. \"workspace_symbol\": An LSP workspace symbol query to find the method or class elsewhere in the codebase to resolve the concern. Example: if you want to see a method called like example.some_method, simply put some_method in this field. Or similarly you might search for a classname. 
   
-After we resolve the code for your code questions, you will need to do a final review on the file.
-List any additional security concerns that you observe (no longer JSON format, use markdown or bullets). If code questions are unresolved, flag them, but you still must provide a final analysis and also analyze things that did not involved code questions.
+These code questions will be resolved into code snippets for your final review, so think carefully about what external context you want to conduct a final review. 
 Consider that both serious false negatives and excessive false positives are problematic; too many concerns and it's noise, but missing a serious Rails application security issue could have dire consequences. Please thank carefully and thanks!
 "
 
 
-FINAL_REVIEW_PROMPT = 'Based on the following code snippets (extracted as resolving some of the Code Questions), please perform a final review of the security posture of the code.'
+SYSTEM_PROMPT_FINAL_REVIEW = "You are an expert security code reviewer for Ruby on Rails applications.
+Please review the following  file and associated code snippets carefully. The code snippets were retrieved based on questions that you generated earlier as they seemed contextually relevant for the review. 
+In your output you should separate ISSUES, CONCERNS, and COMMENTARY. CONCERNS are places where further investigation is required. ISSUES are places where you have identified an actual security issue. COMMENTARY is where you may include analysis for why things are not issues. If there are no issues identified, don't tell me why things are secure (that's for COMMENTARY), simply say no issues identified.
+Consider that both serious false negatives and excessive false positives are problematic; too many concerns and it's noise, but missing a serious Rails application security issue could have dire consequences. Please thank carefully and thanks!
+"
 
 MODEL         = 'o3-mini' # Change this to the model you want to use.
 OUTPUT_FILE   = 'results.txt'
@@ -49,7 +52,7 @@ end
 # Helper: Generate Code Questions for a given file’s content.
 def generate_code_questions(client, file_content)
   messages = [
-    { 'role' => 'system', 'content' => SYSTEM_PROMPT },
+    { 'role' => 'system', 'content' => SYSTEM_PROMPT_QUESTIONS },
     { 'role' => 'user',
       'content' => "Please analyze the following Ruby code and output any Code Questions (CQs) as described. Include for each CQ a 'question', an 'example', and a 'workspace_symbol'. Do not include any extra text - only output valid JSON.\n\n#{file_content}" }
   ]
@@ -138,7 +141,7 @@ while (input_path = gets.chomp) && input_path != "exit"
     puts "Found #{cqs.length} Code Questions in #{filepath}."
 
     cqs.each_with_index do |cq, i|
-      puts "trying cq #{i} with query #{cq.inspect}"
+      puts "trying cq #{i} with query #{cq['workspace_symbol']}"
       cq_result = { question: cq['question'], example: cq['example'], workspace_symbol: cq['workspace_symbol'], status: 'unresolved',
                     resolved_snippet: nil }
 
@@ -165,9 +168,9 @@ while (input_path = gets.chomp) && input_path != "exit"
     # Now perform a final review using all the resolved code snippets.
     final_snippets_text = all_resolved_snippets.join("\n\n===\n\n")
     final_messages = [
-      { 'role' => 'system', 'content' => SYSTEM_PROMPT },
+      { 'role' => 'system', 'content' => SYSTEM_PROMPT_FINAL_REVIEW },
       { 'role' => 'user',
-        'content' => "Here is the file under review: \n\n #{file_content}\n\n\nBelow are the code snippets that were extracted as resolving some of the Code Questions:\n\n#{final_snippets_text}\n\n#{FINAL_REVIEW_PROMPT}" }
+        'content' => "Here is the file under review: \n\n #{file_content}\n\n\nBelow are the code snippets that were extracted as resolving some Code Questions:\n\n#{final_snippets_text}\n\n Please review the code carefully for any security issues." }
     ]
     final_review_response = call_chat(client, final_messages)
 
@@ -181,7 +184,7 @@ while (input_path = gets.chomp) && input_path != "exit"
           out_file.puts '--------------------------------------------'
           out_file.puts "Code Question: #{cq[:question]}"
           out_file.puts "Example: #{cq[:example]}"
-          out_file.puts "Regex: #{cq[:regex]}"
+          out_file.puts "Workfspace Symbol: #{cq[:workspace_symbol]}"
           out_file.puts "Status: #{cq[:status]}"
           out_file.puts "Resolved Snippet:\n#{cq[:resolved_snippet]}" if cq[:resolved_snippet]
         end
