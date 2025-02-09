@@ -20,7 +20,7 @@ SYSTEM_PROMPT_QUESTIONS = <<~PROMPT
   2. "example": An excerpt from the provided file that raised the concern.
   3. "workspace_symbol": An LSP workspace symbol query to find the method or class elsewhere in the codebase.
   
-  These code questions will be resolved into code snippets for your final review, so think carefully about what external context you want to conduct a final review.
+  These code questions will be resolved into code snippets for your final review, so think carefully about what external context you want to see.
   Consider that both serious false negatives and excessive false positives are problematic; too many concerns is noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
 PROMPT
 
@@ -28,19 +28,21 @@ SYSTEM_PROMPT_RESOLVE_QUESTION = <<~PROMPT
   You are an expert security code reviewer for Ruby on Rails applications.
   You have previously generated a Code Search Request (CSR) for a given file.
   Below is the original CSR and the associated code snippet(s) retrieved.
-  Please analyze the snippet(s) along with the original request. If the snippet(s) resolve your concern, set "status" to "resolved" and provide commentary.
-  If they do not, set "status" to "unresolved" and provide a *new* workspace_symbol for further context.
+  Please analyze the snippet(s) along with the original request.
+  If the snippet(s) resolve your concern, set "status" to "resolved", provide a clear explanation in "commentary", and include a new key "resolved_code" with the exact piece or pieces of code that you judge sufficient to address the concern.
+  If the snippet(s) do not resolve the issue, set "status" to "unresolved", provide commentary, and supply a *new* workspace_symbol for additional context.
   Your output should be valid JSON with the following keys:
   1. "status": either "resolved" or "unresolved"
-  2. "commentary": An explanation of why the snippet(s) resolve the concern or why they do not.
-  3. "workspace_symbol": A new LSP workspace symbol query if further context is needed (leave empty if not).
+  2. "commentary": an explanation of why the snippet(s) resolve (or do not resolve) the concern
+  3. "workspace_symbol": a new LSP workspace symbol query if further context is needed (leave empty if not)
+  4. "resolved_code": if status is "resolved", include the specific code piece(s) that resolved the concern (otherwise leave empty)
 PROMPT
 
 SYSTEM_PROMPT_FINAL_REVIEW = <<~PROMPT
   You are an expert security code reviewer for Ruby on Rails applications.
-  Please review the following file and the associated code snippet details carefully. The snippet details were retrieved based on questions that you generated earlier as they seemed contextually relevant for the review.
+  Please review the following file and the associated resolved code snippets carefully. The resolved code snippets were retrieved based on questions that you generated earlier as they seemed contextually relevant for the review.
   In your output, separate ISSUES, CONCERNS, and COMMENTARY. If there are no issues identified, simply state "no issues identified" for ISSUES.
-  Consider that both serious false negatives and excessive false positives are problematic; too many concerns and it's noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
+  Consider that both serious false negatives and excessive false positives are problematic; too many concerns is noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
 PROMPT
 
 MODEL       = 'o3-mini'
@@ -68,7 +70,8 @@ end
 def generate_code_questions(client, file_content)
   messages = [
     { 'role' => 'system', 'content' => SYSTEM_PROMPT_QUESTIONS },
-    { 'role' => 'user', 'content' => "Please analyze the following Ruby code and output any Code Search Requests (CSRs) as described. Include for each CSR a 'question', an 'example', and a 'workspace_symbol'. Do not include any extra text - only output valid JSON.\n\n#{file_content}" }
+    { 'role' => 'user',
+      'content' => "Please analyze the following Ruby code and output any Code Search Requests (CSRs) as described. Include for each CSR a 'question', an 'example', and a 'workspace_symbol'. Do not include any extra text - only output valid JSON.\n\n#{file_content}" }
   ]
   response_text = call_chat(client, messages, reasoning_effort: 'high')
   begin
@@ -85,19 +88,19 @@ end
 def resolve_code_question(client, code_question, multi_snippet)
   messages = [
     { 'role' => 'system', 'content' => SYSTEM_PROMPT_RESOLVE_QUESTION },
-    { 'role' => 'user', 'content' => "Here is the original Code Search Request:\n\n#{code_question.to_json}\n\nAnd here are the retrieved code snippet(s):\n\n#{multi_snippet}\n\nPlease analyze and let me know if this resolves the concern. If not, provide a new workspace_symbol for additional context." }
+    { 'role' => 'user', 'content' => "Here is the original Code Search Request:\n\n#{code_question.to_json}\n\nAnd here are the retrieved code snippet(s):\n\n#{multi_snippet}\n\nPlease analyze and let me know if this resolves the concern. If it does, include a key \"resolved_code\" with only the specific piece(s) of code that answer the concern." }
   ]
   response_text = call_chat(client, messages, reasoning_effort: 'medium')
   begin
     res = JSON.parse(response_text)
-    if res.is_a?(Hash) && res.key?('status') && res.key?('commentary') && res.key?('workspace_symbol')
+    if res.is_a?(Hash) && res.key?('status') && res.key?('commentary') && res.key?('workspace_symbol') && res.key?('resolved_code')
       res
     else
-      { 'status' => 'error', 'commentary' => 'Invalid response format', 'workspace_symbol' => '' }
+      { 'status' => 'error', 'commentary' => 'Invalid response format', 'workspace_symbol' => '', 'resolved_code' => '' }
     end
   rescue JSON::ParserError => e
     puts "Error parsing resolution JSON: #{e.message}"
-    { 'status' => 'error', 'commentary' => 'JSON parsing error', 'workspace_symbol' => '' }
+    { 'status' => 'error', 'commentary' => 'JSON parsing error', 'workspace_symbol' => '', 'resolved_code' => '' }
   end
 end
 
@@ -125,7 +128,7 @@ while (input_path = gets.chomp) && input_path != "exit"
   end
 
   final_review_results = []
-  all_resolved_snippets = []  # To compile snippets for the final review
+  resolved_code_snippets = []  # We now only accumulate the resolved_code pieces
 
   files.each do |filepath|
     puts "Processing file: #{filepath}..."
@@ -168,7 +171,7 @@ while (input_path = gets.chomp) && input_path != "exit"
           question: current_cq["question"],
           example: current_cq["example"],
           workspace_symbol: current_cq["workspace_symbol"],
-          resolved_snippet: multi_snippet,
+          resolved_code: resolution["resolved_code"],
           commentary: resolution["commentary"],
           depth: current_cq["depth"]
         }
@@ -190,7 +193,7 @@ while (input_path = gets.chomp) && input_path != "exit"
             question: current_cq["question"],
             example: current_cq["example"],
             workspace_symbol: current_cq["workspace_symbol"],
-            resolved_snippet: multi_snippet,
+            resolved_code: multi_snippet,
             commentary: "Max recursion depth reached. " + resolution["commentary"],
             depth: current_cq["depth"]
           }
@@ -201,7 +204,7 @@ while (input_path = gets.chomp) && input_path != "exit"
           question: current_cq["question"],
           example: current_cq["example"],
           workspace_symbol: current_cq["workspace_symbol"],
-          resolved_snippet: multi_snippet,
+          resolved_code: multi_snippet,
           commentary: "Unresolved: " + resolution["commentary"],
           depth: current_cq["depth"]
         }
@@ -211,14 +214,14 @@ while (input_path = gets.chomp) && input_path != "exit"
     file_result[:code_questions] = resolved_questions
     final_review_results << file_result
 
-    # Combine all resolved snippet details for final review.
-    all_resolved_texts = resolved_questions.map do |rq|
-      "Question: #{rq[:question]}\nWorkspace Symbol: #{rq[:workspace_symbol]}\nSnippet:\n#{rq[:resolved_snippet]}\nCommentary: #{rq[:commentary]}"
+    # For final review, compile only the resolved code pieces (if available).
+    file_resolved_codes = resolved_questions.map do |rq|
+      "Question: #{rq[:question]}\nWorkspace Symbol: #{rq[:workspace_symbol]}\nResolved Code:\n#{rq[:resolved_code]}\nCommentary: #{rq[:commentary]}"
     end.join("\n\n===\n\n")
 
     final_messages = [
       { 'role' => 'system', 'content' => SYSTEM_PROMPT_FINAL_REVIEW },
-      { 'role' => 'user', 'content' => "Here is the file under review:\n\n#{file_content}\n\nBelow are the resolved code snippet details:\n\n#{all_resolved_texts}\n\nPlease provide your final security review." }
+      { 'role' => 'user', 'content' => "Here is the file under review:\n\n#{file_content}\n\nBelow are the resolved code snippets:\n\n#{file_resolved_codes}\n\nPlease provide your final security review." }
     ]
     final_review_response = call_chat(client, final_messages)
 
@@ -231,7 +234,7 @@ while (input_path = gets.chomp) && input_path != "exit"
         out_file.puts "Example: #{rq[:example]}"
         out_file.puts "Workspace Symbol: #{rq[:workspace_symbol]}"
         out_file.puts "Commentary: #{rq[:commentary]}"
-        out_file.puts "Resolved Snippet:\n#{rq[:resolved_snippet]}"
+        out_file.puts "Resolved Code:\n#{rq[:resolved_code]}"
       end
       out_file.puts "\nFinal Security Review:"
       out_file.puts final_review_response
