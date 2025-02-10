@@ -231,14 +231,18 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
 
     # Build the final resolved code string by including only questions marked as "resolved".
     file_resolved_codes = resolved_questions.select { |rq| rq[:status] == "resolved" }.map do |rq|
-      "Question: #{rq[:question]}\nWorkspace Symbol: #{rq[:workspace_symbol]}\nResolved Code:\n#{rq[:resolved_code]}\nCommentary: #{rq[:commentary]}"
+      "Question: #{rq[:question]}\nResolved Code:\n#{rq[:resolved_code]}\nCommentary: #{rq[:commentary]}"
+    end.join("\n\n===\n\n")
+
+    unresolved_questions = resolved_questions.select { |rq| rq[:status] != "resolved" }.map do |rq|
+      "Question: #{rq[:question]}\nCommentary: #{rq[:commentary]}"
     end.join("\n\n===\n\n")
 
     # If no question was ever resolved, do not include any snippet code.
     final_user_content = if file_resolved_codes.strip.empty?
                            "Here is the file under review:\n\n#{file_content}\n\nNo resolved code snippets were obtained from the Code Search Requests."
                          else
-                           "Here is the file under review:\n\n#{file_content}\n\nBelow are the resolved code snippets:\n\n#{file_resolved_codes}"
+                           "Here is the file under review:\n\n#{file_content}\n\nBelow are the resolved code snippets:\n\n#{file_resolved_codes}\n\nand here are the unresolved questions:\n\n#{unresolved_questions}"
                          end
 
     final_messages = [
