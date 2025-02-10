@@ -109,18 +109,26 @@ def resolve_code_question(client, code_question, multi_snippet)
 end
 
 # --- Main Script ---
+# 
 
+if ARGV.length != 1
+  puts "Usage: ruby enhanced_process_files.rb <project_root>"
+  exit 1
+end
+
+project_root = "file://#{ARGV[0]}"
+puts project_root
 puts "Initializing LSP client..."
 lsp_client = LSPClient.new(
   host: "localhost",
   port: 8123,
-  project_root: "file:///Users/andrew/Documents/aha/aha-app"
+  project_root: project_root
 )
 lsp_client.initialize_handshake
 puts "LSP client initialized."
 
 puts "Enter the path to the file or directory you want to review (or type 'exit' to quit):"
-while (input_path = gets.chomp) && input_path != "exit"
+while (input_path = STDIN.gets.chomp) && input_path != "exit"
   files = []
   if File.directory?(input_path)
     Find.find(input_path) { |path| files << path if File.file?(path) }
