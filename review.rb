@@ -1,97 +1,278 @@
-# !/usr/bin/env ruby
-# process_files.rb
+#!/usr/bin/env ruby
+# enhanced_process_files.rb
 
 require 'openai'
 require 'find'
+require 'json'
+require 'shellwords'
+require 'open3'
+require_relative 'lsp_client'
 
-# Constants – adjust these as needed.
-SYSTEM_PROMPT = "Can you identify any security issues in this code? Consider that both false negatives (any) and false positives (excessive) are problematic. If you point out a bunch of incorrect/non-issue problems to avoid any possibility of false negatives, this won't be usable. You don't need to list some number of items every time; sometimes the correct answer is that there are no issues or just one or two potential issues. But other times there will be more issues. If you miss key security issues, that is a severe failure case. We particularly care about things that could affect sessions, cross-account security, SQL injection, or compromise server integrity, as well as other Rails application security best practices. It is OK to mention issues that we might deliberately be allowing, so that we can verify. Please don't include a preamble framing what the concerns are in aggregate: just dive right into the list and frame individual concerns as needed.  Thanks and think carefully." # <-- Your system prompt goes here.
-MODEL         = 'o3-mini' # or any other model you want to use.
-OUTPUT_FILE   = 'results.txt'
+# Global limits to prevent runaway recursive queries.
+MAX_TOTAL_QUESTIONS = 20
+MAX_DEPTH = 5
 
-# Create an OpenAI client. Ensure your API key is set in the environment.
+# SYSTEM PROMPTS
+
+SYSTEM_PROMPT_QUESTIONS = <<~PROMPT
+  You are an expert security code reviewer for Ruby on Rails applications. 
+  For each file you are given, if you detect a potential security issue that might depend on code 
+  that is not visible in the current file, generate a Code Search Request (CSR). 
+  You may generate up to 10 CSRs. 
+  Each CSR must include:
+  1. "question": A clear explanation of the security concern (with logical rationale and impact) and what code, not present in the current file, that you need to see to resolve it.
+  2. "example": An excerpt from the provided file that raised the concern.
+  3. "workspace_symbol": An LSP workspace symbol query to find the method or class elsewhere in the codebase.
+  
+  These code questions will be resolved into code snippets for your final review, so think carefully about what external context you want to see.
+  Consider that both serious false negatives and excessive false positives are problematic; too many concerns is noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
+PROMPT
+
+SYSTEM_PROMPT_RESOLVE_QUESTION = <<~PROMPT
+  You are an expert security code reviewer for Ruby on Rails applications.
+  You have previously generated a Code Search Request (CSR) for a given file.
+  Below is the original CSR and the associated code snippet(s) retrieved.
+  Please analyze the snippet(s) along with the original request.
+  If the snippet(s) resolve your concern, set "status" to "resolved", provide a clear explanation in "commentary", and include a new key "resolved_code" with the exact piece or pieces of code that you judge sufficient to address the concern.
+  If the snippet(s) do not resolve the issue, set "status" to "unresolved", provide commentary, and supply a *new* workspace_symbol for additional context.
+  Your output should be valid JSON with the following keys:
+  1. "status": either "resolved" or "unresolved"
+  2. "commentary": an explanation of why the snippet(s) resolve (or do not resolve) the concern
+  3. "workspace_symbol": a new LSP workspace symbol query if further context is needed (leave empty if not)
+  4. "resolved_code": if status is "resolved", include the specific code piece(s) that resolved the concern (otherwise leave empty)
+PROMPT
+
+SYSTEM_PROMPT_FINAL_REVIEW = <<~PROMPT
+  You are an expert security code reviewer for Ruby on Rails applications.
+  Please review the following file and the associated resolved code snippets carefully. The resolved code snippets were retrieved based on questions that you generated earlier as they seemed contextually relevant for the review.
+  In your output, separate ISSUES, CONCERNS, and COMMENTARY. If there are no issues identified, simply state "no issues identified" for ISSUES.
+  Consider that both serious false negatives and excessive false positives are problematic; too many concerns is noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
+PROMPT
+
+MODEL       = 'o3-mini'
+OUTPUT_FILE = 'results.txt'
+
+# Create an OpenAI client. (Make sure OPENAI_API_KEY is set in your environment.)
 client = OpenAI::Client.new(access_token: ENV.fetch('OPENAI_API_KEY'))
 
-# Check that the script received a command line argument (file or directory).
-if ARGV.empty?
-  puts 'Usage: ruby process_files.rb <file_or_directory_path>'
-  exit 1
+# Helper: send a chat request and return the model's reply.
+def call_chat(client, messages, reasoning_effort: 'high')
+  response = client.chat(
+    parameters: {
+      model: MODEL,
+      messages: messages,
+      reasoning_effort: reasoning_effort
+    }
+  )
+  response.dig('choices', 0, 'message', 'content')
+rescue StandardError => e
+  puts "Error during API call: #{e.message}"
+  nil
 end
 
-input_path = ARGV[0]
-puts SYSTEM_PROMPT
-
-# Gather all files (if a directory, search recursively; if a file, process it alone).
-files = []
-if File.directory?(input_path)
-  Find.find(input_path) do |path|
-    files << path if File.file?(path)
+# Generates initial code questions (CSRs) for a file's content.
+def generate_code_questions(client, file_content)
+  messages = [
+    { 'role' => 'system', 'content' => SYSTEM_PROMPT_QUESTIONS },
+    { 'role' => 'user',
+      'content' => "Please analyze the following Ruby code and output any Code Search Requests (CSRs) as described. Include for each CSR a 'question', an 'example', and a 'workspace_symbol'. Do not include any extra text - only output valid JSON.\n\n#{file_content}" }
+  ]
+  response_text = call_chat(client, messages, reasoning_effort: 'high')
+  begin
+    cq_array = JSON.parse(response_text)
+    return [] unless cq_array.is_a?(Array)
+    cq_array.select { |cq| cq.is_a?(Hash) && cq.key?('question') && cq.key?('example') && cq.key?('workspace_symbol') }
+  rescue JSON::ParserError => e
+    puts "Error parsing Code Questions JSON: #{e.message}"
+    []
   end
-elsif File.file?(input_path)
-  files << input_path
-else
-  puts 'The specified path is not a file or directory.'
+end
+
+# Resolves a single code question by feeding the retrieved multi-snippet context to GPT.
+def resolve_code_question(client, code_question, multi_snippet)
+  messages = [
+    { 'role' => 'system', 'content' => SYSTEM_PROMPT_RESOLVE_QUESTION },
+    { 'role' => 'user', 'content' => "Here is the original Code Search Request:\n\n#{code_question.to_json}\n\nAnd here are the retrieved code snippet(s):\n\n#{multi_snippet}\n\nPlease analyze and let me know if this resolves the concern. If it does, include a key \"resolved_code\" with only the specific piece(s) of code that answer the concern." }
+  ]
+  response_text = call_chat(client, messages, reasoning_effort: 'medium')
+  begin
+    res = JSON.parse(response_text)
+    if res.is_a?(Hash) && res.key?('status') && res.key?('commentary') && res.key?('workspace_symbol') && res.key?('resolved_code')
+      res
+    else
+      { 'status' => 'error', 'commentary' => 'Invalid response format', 'workspace_symbol' => '', 'resolved_code' => '' }
+    end
+  rescue JSON::ParserError => e
+    puts "Error parsing resolution JSON: #{e.message}"
+    { 'status' => 'error', 'commentary' => 'JSON parsing error', 'workspace_symbol' => '', 'resolved_code' => '' }
+  end
+end
+
+# --- Main Script ---
+# 
+
+if ARGV.length != 1
+  puts "Usage: ruby enhanced_process_files.rb <project_root>"
   exit 1
 end
 
-# Open the output file in append mode.
-File.open(OUTPUT_FILE, 'a') do |out_file|
+project_root = "file://#{ARGV[0]}"
+puts project_root
+puts "Initializing LSP client..."
+lsp_client = LSPClient.new(
+  host: "localhost",
+  port: 8123,
+  project_root: project_root
+)
+lsp_client.initialize_handshake
+puts "LSP client initialized."
+
+puts "Enter the path to the file or directory you want to review (or type 'exit' to quit):"
+while (input_path = STDIN.gets.chomp) && input_path != "exit"
+  files = []
+  if File.directory?(input_path)
+    Find.find(input_path) { |path| files << path if File.file?(path) }
+  elsif File.file?(input_path)
+    files << input_path
+  else
+    puts "The specified path is not a file or directory, please try again."
+    next
+  end
+
+  final_review_results = []
+
   files.each do |filepath|
-    puts "Processing #{filepath}..."
+    puts "\nProcessing file: #{filepath}..."
     begin
       file_content = File.read(filepath)
-    rescue StandardError => e
-      puts "Error reading file #{filepath}: #{e.message}"
+    rescue => e
+      puts "Error reading #{filepath}: #{e.message}"
       next
     end
 
-    # Prepare the conversation with a system and a user message.
-    messages = [
-      { 'role' => 'system', 'content' => SYSTEM_PROMPT },
-      { 'role' => 'user',   'content' => file_content }
+    file_result = { file: filepath, code_questions: [] }
+    initial_cqs = generate_code_questions(client, file_content)
+    puts "Found #{initial_cqs.length} initial Code Questions in #{filepath}."
+
+    # Create a queue for code questions.
+    question_queue = []
+    initial_cqs.each do |cq|
+      cq["depth"] = 0
+      question_queue << cq
+    end
+
+    resolved_questions = []
+    total_questions = 0
+
+    # Process the queue until empty or we hit our maximum question limit.
+    while !question_queue.empty? && total_questions < MAX_TOTAL_QUESTIONS
+      current_cq = question_queue.shift
+      total_questions += 1
+      puts "\nProcessing Code Question: #{current_cq['question']} (Symbol: #{current_cq['workspace_symbol']}, Depth: #{current_cq['depth']})"
+
+      # Retrieve up to 10 snippet matches from LSP.
+      multi_snippet = lsp_client.get_multi_snippet(current_cq["workspace_symbol"], 10)
+
+      resolution = resolve_code_question(client, current_cq, multi_snippet)
+      puts "\nResolution: #{resolution.inspect}"
+
+      if resolution["status"] == "resolved"
+        resolved_questions << {
+          question: current_cq["question"],
+          example: current_cq["example"],
+          workspace_symbol: current_cq["workspace_symbol"],
+          resolved_code: resolution["resolved_code"],
+          commentary: resolution["commentary"],
+          depth: current_cq["depth"],
+          status: "resolved"
+        }
+      elsif resolution["status"] == "unresolved" && !resolution["workspace_symbol"].to_s.strip.empty?
+        # If a new symbol is provided and we haven't exceeded max depth, queue a new question.
+        new_depth = current_cq["depth"] + 1
+        if new_depth < MAX_DEPTH
+          new_cq = {
+            "question" => "Follow-up for additional context: #{resolution['workspace_symbol']}",
+            "example" => current_cq["example"],
+            "workspace_symbol" => resolution["workspace_symbol"],
+            "depth" => new_depth
+          }
+          question_queue << new_cq
+          puts "Queued new Code Question for symbol: #{resolution['workspace_symbol']} (Depth: #{new_depth})"
+        else
+          # Exceeded max depth; record as unresolved (do not include multi-snippet code).
+          resolved_questions << {
+            question: current_cq["question"],
+            example: current_cq["example"],
+            workspace_symbol: current_cq["workspace_symbol"],
+            resolved_code: "",
+            commentary: "Max recursion depth reached. " + resolution["commentary"],
+            depth: current_cq["depth"],
+            status: "unresolved"
+          }
+        end
+      else
+        # No further symbol provided; mark as unresolved and do not include the multi-snippet code.
+        resolved_questions << {
+          question: current_cq["question"],
+          example: current_cq["example"],
+          workspace_symbol: current_cq["workspace_symbol"],
+          resolved_code: "",
+          commentary: "Unresolved: " + resolution["commentary"],
+          depth: current_cq["depth"],
+          status: "unresolved"
+        }
+      end
+    end
+
+    puts "preparing final review...."
+
+    file_result[:code_questions] = resolved_questions
+    final_review_results << file_result
+
+    # Build the final resolved code string by including only questions marked as "resolved".
+    file_resolved_codes = resolved_questions.select { |rq| rq[:status] == "resolved" }.map do |rq|
+      "Question: #{rq[:question]}\nWorkspace Symbol: #{rq[:workspace_symbol]}\nResolved Code:\n#{rq[:resolved_code]}\nCommentary: #{rq[:commentary]}"
+    end.join("\n\n===\n\n")
+
+    # If no question was ever resolved, do not include any snippet code.
+    final_user_content = if file_resolved_codes.strip.empty?
+                           "Here is the file under review:\n\n#{file_content}\n\nNo resolved code snippets were obtained from the Code Search Requests."
+                         else
+                           "Here is the file under review:\n\n#{file_content}\n\nBelow are the resolved code snippets:\n\n#{file_resolved_codes}"
+                         end
+
+    final_messages = [
+      { 'role' => 'system', 'content' => SYSTEM_PROMPT_FINAL_REVIEW },
+      { 'role' => 'user', 'content' => final_user_content + "\n\nPlease provide your final security review." }
     ]
 
-    # Send the request to the OpenAI API.
-    begin
-      response = client.chat(
-        parameters: {
-          model: MODEL,
-          messages:,
-          reasoning_effort: 'high'
-        }
-      )
+    puts "executing final review..."
+    final_review_response = call_chat(client, final_messages)
 
-      # Fetch the output from the first choice.
-      output_text = response.dig('choices', 0, 'message', 'content')
-      output_text = '[No output returned]' if output_text.nil?
-
-      # messages << { "role" => "assistant", "content" => output_text }
-      # messages << { "role" => "user", "content" => "Thanks for your review. Can you double check the file in light if your first review, and make sure you didn't miss anything serious? Do not repeat or summarize what's already said, if there's nothing else, just say that, or list additional concerns if you have them." }
-
-      # puts "2nd look at #{filepath}..."
-      # response2 = client.chat(
-      #   parameters: {
-      #     model: MODEL,
-      #     messages: messages,
-      #     reasoning_effort: 'high'
-      #   }
-      # )
-
-      # output_text2 = response2.dig("choices", 0, "message", "content")
-
-      # Append the results to the output file.
-      out_file.puts "File: #{filepath}"
-      out_file.puts 'Response:'
-      out_file.puts output_text
-      # out_file.puts "2nd look:"
-      # out_file.puts output_text2
-      out_file.puts '------------------------------------------------------------'
-      out_file.flush
-
-      puts "Finished processing #{filepath}."
-    rescue StandardError => e
-      puts "Error processing file #{filepath}: #{e.message}"
-      next
+    File.open(OUTPUT_FILE, 'a') do |out_file|
+      out_file.puts "Enhanced Security Review Results for File: #{filepath}"
+      out_file.puts "=================================="
+      resolved_questions.each do |rq|
+        out_file.puts "--------------------------------------------"
+        out_file.puts "Code Question: #{rq[:question]}"
+        out_file.puts "Example: #{rq[:example]}"
+        out_file.puts "Workspace Symbol: #{rq[:workspace_symbol]}"
+        out_file.puts "Commentary: #{rq[:commentary]}"
+        # Only print the resolved code if the question was resolved.
+        if rq[:status] == "resolved"
+          out_file.puts "Resolved Code:\n#{rq[:resolved_code]}"
+        end
+      end
+      out_file.puts "\nFinal Security Review:"
+      out_file.puts final_review_response
+      out_file.puts "\n==================================\n"
     end
+
+    puts "Review results for #{filepath} saved to #{OUTPUT_FILE}."
   end
+
+  puts "Enhanced security review complete. Results saved to #{OUTPUT_FILE}."
 end
+
+puts "Disconnecting LSP client..."
+lsp_client.disconnect
