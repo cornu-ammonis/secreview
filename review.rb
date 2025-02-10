@@ -1,11 +1,7 @@
 #!/usr/bin/env ruby
-# enhanced_process_files.rb
 
 require 'openai'
-require 'find'
 require 'json'
-require 'shellwords'
-require 'open3'
 require_relative 'lsp_client'
 
 # Global limits to prevent runaway recursive queries.
