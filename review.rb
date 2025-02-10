@@ -15,7 +15,11 @@ MAX_DEPTH = 5
 # SYSTEM PROMPTS
 
 SYSTEM_PROMPT_QUESTIONS = <<~PROMPT
-  You are an expert security code reviewer for Ruby on Rails applications. For each file you are given, if you detect a potential security issue that might depend on code that is not visible in the current file, generate a Code Search Request (CSR). You may generate up to 10 CSRs. Each CSR must include:
+  You are an expert security code reviewer for Ruby on Rails applications. 
+  For each file you are given, if you detect a potential security issue that might depend on code 
+  that is not visible in the current file, generate a Code Search Request (CSR). 
+  You may generate up to 10 CSRs. 
+  Each CSR must include:
   1. "question": A clear explanation of the security concern (with logical rationale and impact) and what code, not present in the current file, that you need to see to resolve it.
   2. "example": An excerpt from the provided file that raised the concern.
   3. "workspace_symbol": An LSP workspace symbol query to find the method or class elsewhere in the codebase.
@@ -128,7 +132,8 @@ while (input_path = gets.chomp) && input_path != "exit"
   end
 
   final_review_results = []
-  resolved_code_snippets = []  # We now only accumulate the resolved_code pieces
+  # We now accumulate only resolved code snippets.
+  resolved_code_snippets = []  
 
   files.each do |filepath|
     puts "Processing file: #{filepath}..."
@@ -173,7 +178,8 @@ while (input_path = gets.chomp) && input_path != "exit"
           workspace_symbol: current_cq["workspace_symbol"],
           resolved_code: resolution["resolved_code"],
           commentary: resolution["commentary"],
-          depth: current_cq["depth"]
+          depth: current_cq["depth"],
+          status: "resolved"
         }
       elsif resolution["status"] == "unresolved" && !resolution["workspace_symbol"].to_s.strip.empty?
         # If a new symbol is provided and we haven't exceeded max depth, queue a new question.
@@ -188,41 +194,54 @@ while (input_path = gets.chomp) && input_path != "exit"
           question_queue << new_cq
           puts "Queued new Code Question for symbol: #{resolution['workspace_symbol']} (Depth: #{new_depth})"
         else
-          # Exceeded max depth; record the result as unresolved.
+          # Exceeded max depth; record as unresolved (do not include multi-snippet code).
           resolved_questions << {
             question: current_cq["question"],
             example: current_cq["example"],
             workspace_symbol: current_cq["workspace_symbol"],
-            resolved_code: multi_snippet,
+            resolved_code: "",
             commentary: "Max recursion depth reached. " + resolution["commentary"],
-            depth: current_cq["depth"]
+            depth: current_cq["depth"],
+            status: "unresolved"
           }
         end
       else
-        # No further symbol provided; mark as unresolved.
+        # No further symbol provided; mark as unresolved and do not include the multi-snippet code.
         resolved_questions << {
           question: current_cq["question"],
           example: current_cq["example"],
           workspace_symbol: current_cq["workspace_symbol"],
-          resolved_code: multi_snippet,
+          resolved_code: "",
           commentary: "Unresolved: " + resolution["commentary"],
-          depth: current_cq["depth"]
+          depth: current_cq["depth"],
+          status: "unresolved"
         }
       end
     end
 
+    puts "preparing final review...."
+
     file_result[:code_questions] = resolved_questions
     final_review_results << file_result
 
-    # For final review, compile only the resolved code pieces (if available).
-    file_resolved_codes = resolved_questions.map do |rq|
+    # Build the final resolved code string by including only questions marked as "resolved".
+    file_resolved_codes = resolved_questions.select { |rq| rq[:status] == "resolved" }.map do |rq|
       "Question: #{rq[:question]}\nWorkspace Symbol: #{rq[:workspace_symbol]}\nResolved Code:\n#{rq[:resolved_code]}\nCommentary: #{rq[:commentary]}"
     end.join("\n\n===\n\n")
 
+    # If no question was ever resolved, do not include any snippet code.
+    final_user_content = if file_resolved_codes.strip.empty?
+                           "Here is the file under review:\n\n#{file_content}\n\nNo resolved code snippets were obtained from the Code Search Requests."
+                         else
+                           "Here is the file under review:\n\n#{file_content}\n\nBelow are the resolved code snippets:\n\n#{file_resolved_codes}"
+                         end
+
     final_messages = [
       { 'role' => 'system', 'content' => SYSTEM_PROMPT_FINAL_REVIEW },
-      { 'role' => 'user', 'content' => "Here is the file under review:\n\n#{file_content}\n\nBelow are the resolved code snippets:\n\n#{file_resolved_codes}\n\nPlease provide your final security review." }
+      { 'role' => 'user', 'content' => final_user_content + "\n\nPlease provide your final security review." }
     ]
+
+    puts "executing final review..."
     final_review_response = call_chat(client, final_messages)
 
     File.open(OUTPUT_FILE, 'a') do |out_file|
@@ -234,7 +253,10 @@ while (input_path = gets.chomp) && input_path != "exit"
         out_file.puts "Example: #{rq[:example]}"
         out_file.puts "Workspace Symbol: #{rq[:workspace_symbol]}"
         out_file.puts "Commentary: #{rq[:commentary]}"
-        out_file.puts "Resolved Code:\n#{rq[:resolved_code]}"
+        # Only print the resolved code if the question was resolved.
+        if rq[:status] == "resolved"
+          out_file.puts "Resolved Code:\n#{rq[:resolved_code]}"
+        end
       end
       out_file.puts "\nFinal Security Review:"
       out_file.puts final_review_response
