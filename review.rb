@@ -7,7 +7,7 @@ require_relative 'lsp_client'
 
 # Global limits to prevent runaway recursive queries.
 MAX_TOTAL_QUESTIONS = 20
-MAX_DEPTH = 5
+MAX_DEPTH = 2
 
 # SYSTEM PROMPTS
 
@@ -100,7 +100,7 @@ def resolve_code_question(client, code_question, multi_snippet)
     else
       { 'status' => 'error', 'commentary' => 'Invalid response format', 'workspace_symbol' => '', 'resolved_code' => '' }
     end
-  rescue JSON::ParserError => e
+  rescue StandardError => e
     puts "Error parsing resolution JSON: #{e.message}"
     { 'status' => 'error', 'commentary' => 'JSON parsing error', 'workspace_symbol' => '', 'resolved_code' => '' }
   end
@@ -186,7 +186,7 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
           depth: current_cq["depth"],
           status: "resolved"
         }
-      elsif resolution["status"] == "unresolved" && !resolution["workspace_symbol"].to_s.strip.empty?
+      elsif resolution["status"] == "unresolved" && !resolution["workspace_symbol"].to_s.strip.empty? && resolution["workspace_symbol"].to_s.strip != current_cq["workspace_symbol"].to_s.strip
         # If a new symbol is provided and we haven't exceeded max depth, queue a new question.
         new_depth = current_cq["depth"] + 1
         if new_depth < MAX_DEPTH
