@@ -140,11 +140,9 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
   end
 
   final_review_results = []
-  # We now accumulate only resolved code snippets.
-  resolved_code_snippets = []  
 
   files.each do |filepath|
-    puts "Processing file: #{filepath}..."
+    puts "\nProcessing file: #{filepath}..."
     begin
       file_content = File.read(filepath)
     rescue => e
@@ -170,14 +168,13 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
     while !question_queue.empty? && total_questions < MAX_TOTAL_QUESTIONS
       current_cq = question_queue.shift
       total_questions += 1
-      puts "Processing Code Question: #{current_cq['question']} (Symbol: #{current_cq['workspace_symbol']}, Depth: #{current_cq['depth']})"
+      puts "\nProcessing Code Question: #{current_cq['question']} (Symbol: #{current_cq['workspace_symbol']}, Depth: #{current_cq['depth']})"
 
       # Retrieve up to 10 snippet matches from LSP.
       multi_snippet = lsp_client.get_multi_snippet(current_cq["workspace_symbol"], 10)
-      puts "Retrieved snippet(s):\n#{multi_snippet}"
 
       resolution = resolve_code_question(client, current_cq, multi_snippet)
-      puts "Resolution: #{resolution.inspect}"
+      puts "\nResolution: #{resolution.inspect}"
 
       if resolution["status"] == "resolved"
         resolved_questions << {
