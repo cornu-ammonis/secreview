@@ -2,6 +2,7 @@
 
 require 'openai'
 require 'json'
+require 'find'
 require_relative 'lsp_client'
 
 # Global limits to prevent runaway recursive queries.
@@ -30,7 +31,8 @@ SYSTEM_PROMPT_RESOLVE_QUESTION = <<~PROMPT
   Below is the original CSR and the associated code snippet(s) retrieved.
   Please analyze the snippet(s) along with the original request.
   If the snippet(s) resolve your concern, set "status" to "resolved", provide a clear explanation in "commentary", and include a new key "resolved_code" with the exact piece or pieces of code that you judge sufficient to address the concern.
-  If the snippet(s) do not resolve the issue, set "status" to "unresolved", provide commentary, and supply a *new* workspace_symbol for additional context.
+  If the snippet(s) do not resolve the issue, set "status" to "unresolved", provide commentary, and supply a *new* workspace_symbol to try a different LSP query.
+  Do not choose a symbol for your query that exactly matches a previous query.
   Your output should be valid JSON with the following keys:
   1. "status": either "resolved" or "unresolved"
   2. "commentary": an explanation of why the snippet(s) resolve (or do not resolve) the concern
@@ -138,6 +140,8 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
   final_review_results = []
 
   files.each do |filepath|
+    start_time = Time.now
+
     puts "\nProcessing file: #{filepath}..."
     begin
       file_content = File.read(filepath)
@@ -187,7 +191,7 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
         new_depth = current_cq["depth"] + 1
         if new_depth < MAX_DEPTH
           new_cq = {
-            "question" => "Follow-up for additional context: #{resolution['workspace_symbol']}",
+            "question" => "#{current_cq["question"]}\n Follow-up for additional context: #{resolution['workspace_symbol']} \n previous_symbol, don't query this again: #{current_cq['workspace_symbol']}\n",
             "example" => current_cq["example"],
             "workspace_symbol" => resolution["workspace_symbol"],
             "depth" => new_depth
@@ -264,7 +268,7 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
       out_file.puts "\n==================================\n"
     end
 
-    puts "Review results for #{filepath} saved to #{OUTPUT_FILE}."
+    puts "Review results for #{filepath} saved to #{OUTPUT_FILE}. Took #{Time.now - start_time} seconds."
   end
 
   puts "Enhanced security review complete. Results saved to #{OUTPUT_FILE}."
