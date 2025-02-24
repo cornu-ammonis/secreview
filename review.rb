@@ -54,6 +54,9 @@ You are particularly paranoid, speculating about potential problems or seeing mo
 This paranoia does come with commentary about likelihood, and it will be up to a downstream judge to decide whether your overly rigorous analysis is proportional to the problem at hand. 
 Leave no stone unturned, but do not create excessive noise in your output.
 
+You will be given code as well as a list of resolved and unresolved code search questions. The questions should help guide your review,
+but they are not the only thing to consider. You should also flag any issues that are unrelated to the questions.
+
 In your output, separate ISSUES, CONCERNS, and COMMENTARY. If there are no issues identified, simply state "no issues identified" for ISSUES.
 PROMPT
 
@@ -67,6 +70,9 @@ but only if they have a potential security impact.
 If something looks likely to cause an actual user facing bug or error, even if there is no direct security impact, 
 you should note that as an issue.
 
+You will be given code as well as a list of resolved and unresolved code search questions. The questions should help guide your review,
+but they are not the only thing to consider. You should also flag any issues that are unrelated to the questions. 
+
 In your output, separate ISSUES, CONCERNS, and COMMENTARY. 
 If there are no issues identified, simply state "no issues identified" for ISSUES.
 PROMPT
@@ -75,7 +81,8 @@ SYSTEM_PROMPT_GENERIC = <<~PROMPT
 You are an expert security code reviewer for Ruby on Rails applications.
 
 Please review the following file and the associated resolved code snippets carefully.
-The resolved code snippets were retrieved based on questions that you generated earlier as they seemed contextually relevant for the review.
+You will be given code as well as a list of resolved and unresolved code search questions. The questions should help guide your review,
+but they are not the only thing to consider. You should also flag any issues that are unrelated to the questions.
 
 In your output, separate ISSUES, CONCERNS, and COMMENTARY. If there are no issues identified, simply state "no issues identified" for ISSUES.
 
@@ -103,6 +110,7 @@ PARALLEL_AGENT_PROMPTS = [SYSTEM_PROMPT_PARANOID, SYSTEM_PROMPT_JUSTIFIER, SYSTE
 
 MODEL       = 'o3-mini'
 OUTPUT_FILE = 'results.txt'
+AGENT_OUTPUT_FILE = 'agent_results.txt'
 
 # Create an OpenAI client. (Make sure OPENAI_API_KEY is set in your environment.)
 client = OpenAI::Client.new(access_token: ENV.fetch('OPENAI_API_KEY'))
@@ -122,6 +130,42 @@ rescue StandardError => e
   nil
 end
 
+def mixture_of_agents_final_review(client, code_inputs, filepath)
+  threads = PARALLEL_AGENT_PROMPTS.map do |prompt|
+    Thread.new do
+      puts "executing agent..."
+      messages = [
+        { role: "system", content: prompt },
+        { role: "user", content: code_inputs }
+      ]
+      call_chat(client, messages, reasoning_effort: 'medium')
+    end
+  end
+  
+  responses = threads.map(&:value)
+
+  multi_agent_result = ""
+  responses.each_with_index do |response, i| 
+    multi_agent_result += "Reviewer #{i+1}:\n"
+    multi_agent_result += response + "\n\n"
+  end
+
+  File.open(AGENT_OUTPUT_FILE, 'a') do |out_file|
+    out_file.puts "intermediate multi-agent results for File: #{filepath}"
+    out_file.puts "=================================="
+    out_file.puts multi_agent_result
+    out_file.puts "\n==================================\n"
+  end
+
+  puts "executing final review..."
+
+  final_messages = [
+        { 'role' => 'system', 'content' => SYSTEM_PROMPT_PRINCIPAL },
+        { 'role' => 'user', 'content' => code_inputs + "\n\n" + multi_agent_result + "\n\nPlease provide your final security review." }
+      ]
+  
+  call_chat(client, final_messages)
+end
 
 # Generates initial code questions (CSRs) for a file's content.
 def generate_code_questions(client, file_content)
@@ -304,7 +348,7 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
     
 
     if MOA == true
-      final_review_response = mixture_of_agents_final_review(client, final_user_content)
+      final_review_response = mixture_of_agents_final_review(client, final_user_content, filepath)
     else 
       final_messages = [
         { 'role' => 'system', 'content' => SYSTEM_PROMPT_FINAL_REVIEW },
