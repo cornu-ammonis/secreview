@@ -147,12 +147,15 @@ rescue StandardError => e
   nil
 end
 
-def mixture_of_agents_final_review(client, code_inputs, file_alone, filepath)
+def mixture_of_agents_final_review(client, code_inputs, original_file, filepath)
   threads = PARALLEL_AGENT_PROMPTS.map do |prompt|
     Thread.new do
       content = if prompt == SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT
-        puts "executing this agent on file alone..."
-        file_alone
+        # the idea here is to have one agent operate on only the original file, to mitigate 
+        # the effect of becoming distracted by the resolved/unresolved questions and missing issues
+        # that are clear from the original file alone.
+        puts "executing this agent on original file in isolation..."
+        original_file
       else
         puts "executing agent..."
         code_inputs
