@@ -138,7 +138,7 @@ def mixture_of_agents_final_review(client, code_inputs, filepath)
         { role: "system", content: prompt },
         { role: "user", content: code_inputs }
       ]
-      call_chat(client, messages, reasoning_effort: 'medium')
+      call_chat(client, messages, reasoning_effort: 'high')
     end
   end
   
@@ -191,7 +191,7 @@ def resolve_code_question(client, code_question, multi_snippet)
     { 'role' => 'system', 'content' => SYSTEM_PROMPT_RESOLVE_QUESTION },
     { 'role' => 'user', 'content' => "Here is the original Code Search Request:\n\n#{code_question.to_json}\n\nAnd here are the retrieved code snippet(s):\n\n#{multi_snippet}\n\nPlease analyze and let me know if this resolves the concern. If it does, include a key \"resolved_code\" with only the specific piece(s) of code that answer the concern." }
   ]
-  response_text = call_chat(client, messages, reasoning_effort: 'medium')
+  response_text = call_chat(client, messages, reasoning_effort: 'low')
   begin
     res = JSON.parse(response_text)
     if res.is_a?(Hash) && res.key?('status') && res.key?('commentary') && res.key?('workspace_symbol') && res.key?('resolved_code')
