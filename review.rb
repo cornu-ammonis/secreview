@@ -256,73 +256,81 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
     puts "Found #{initial_cqs.length} initial Code Questions in #{filepath}."
 
     # Create a queue for code questions.
-    question_queue = []
+    question_queues = []
+    MAX_DEPTH.times do |i|
+      question_queues << []
+    end
     initial_cqs.each do |cq|
-      cq["depth"] = 0
-      question_queue << cq
+      question_queue[0] << [cq, lsp_client.get_multi_snippet(current_cq["workspace_symbol"], 10)]
     end
 
     resolved_questions = []
     total_questions = 0
+    depth = 0
 
+    while depth < MAX_DEPTH
+      question_queue = question_queues[depth] 
     # Process the queue until empty or we hit our maximum question limit.
-    while !question_queue.empty? && total_questions < MAX_TOTAL_QUESTIONS
-      current_cq = question_queue.shift
-      total_questions += 1
-      puts "\nProcessing Code Question: #{current_cq['question']} (Symbol: #{current_cq['workspace_symbol']}, Depth: #{current_cq['depth']})"
+      threads = question_queue.map do |current|
+        Thread.new do
+          current_cq = current[0]
+          multi_snippet = current[1]
+          total_questions += 1
+          puts "\nProcessing Code Question: #{current_cq['question']} (Symbol: #{current_cq['workspace_symbol']}, Depth: #{current_cq['depth']})"
 
-      # Retrieve up to 10 snippet matches from LSP.
-      multi_snippet = lsp_client.get_multi_snippet(current_cq["workspace_symbol"], 10)
+          resolution = resolve_code_question(client, current_cq, multi_snippet)
+          puts "\nResolution: #{resolution.inspect}"
 
-      resolution = resolve_code_question(client, current_cq, multi_snippet)
-      puts "\nResolution: #{resolution.inspect}"
-
-      if resolution["status"] == "resolved"
-        resolved_questions << {
-          question: current_cq["question"],
-          example: current_cq["example"],
-          workspace_symbol: current_cq["workspace_symbol"],
-          resolved_code: resolution["resolved_code"],
-          commentary: resolution["commentary"],
-          depth: current_cq["depth"],
-          status: "resolved"
-        }
-      elsif resolution["status"] == "unresolved" && !resolution["workspace_symbol"].to_s.strip.empty? && resolution["workspace_symbol"].to_s.strip != current_cq["workspace_symbol"].to_s.strip
-        # If a new symbol is provided and we haven't exceeded max depth, queue a new question.
-        new_depth = current_cq["depth"] + 1
-        if new_depth < MAX_DEPTH
-          new_cq = {
-            "question" => "#{current_cq["question"]}\n Follow-up for additional context: #{resolution['workspace_symbol']} \n previous_symbol, don't query this again: #{current_cq['workspace_symbol']}\n",
-            "example" => current_cq["example"],
-            "workspace_symbol" => resolution["workspace_symbol"],
-            "depth" => new_depth
-          }
-          question_queue << new_cq
-          puts "Queued new Code Question for symbol: #{resolution['workspace_symbol']} (Depth: #{new_depth})"
-        else
-          # Exceeded max depth; record as unresolved (do not include multi-snippet code).
-          resolved_questions << {
-            question: current_cq["question"],
-            example: current_cq["example"],
-            workspace_symbol: current_cq["workspace_symbol"],
-            resolved_code: "",
-            commentary: "Max recursion depth reached. " + resolution["commentary"],
-            depth: current_cq["depth"],
-            status: "unresolved"
-          }
+          if resolution["status"] == "resolved"
+            resolved_questions << {
+              question: current_cq["question"],
+              example: current_cq["example"],
+              workspace_symbol: current_cq["workspace_symbol"],
+              resolved_code: resolution["resolved_code"],
+              commentary: resolution["commentary"],
+              depth: current_cq["depth"],
+              status: "resolved"
+            }
+          elsif resolution["status"] == "unresolved" && !resolution["workspace_symbol"].to_s.strip.empty? && resolution["workspace_symbol"].to_s.strip != current_cq["workspace_symbol"].to_s.strip
+            # If a new symbol is provided and we haven't exceeded max depth, queue a new question.
+            new_depth = depth + 1
+            if new_depth < MAX_DEPTH
+              new_cq = {
+                "question" => "#{current_cq["question"]}\n Follow-up for additional context: #{resolution['workspace_symbol']} \n previous_symbol, don't query this again: #{current_cq['workspace_symbol']}\n",
+                "example" => current_cq["example"],
+                "workspace_symbol" => resolution["workspace_symbol"],
+                "depth" => new_depth
+              }
+              question_queues[new_depth] << [new_cq, lsp_client.get_multi_snippet(new_cq["workspace_symbol"], 10)]
+              puts "Queued new Code Question for symbol: #{resolution['workspace_symbol']} (Depth: #{new_depth})"
+            else
+              # Exceeded max depth; record as unresolved (do not include multi-snippet code).
+              resolved_questions << {
+                question: current_cq["question"],
+                example: current_cq["example"],
+                workspace_symbol: current_cq["workspace_symbol"],
+                resolved_code: "",
+                commentary: "Max recursion depth reached. " + resolution["commentary"],
+                depth: current_cq["depth"],
+                status: "unresolved"
+              }
+            end
+          else
+            # No further symbol provided; mark as unresolved and do not include the multi-snippet code.
+            resolved_questions << {
+              question: current_cq["question"],
+              example: current_cq["example"],
+              workspace_symbol: current_cq["workspace_symbol"],
+              resolved_code: "",
+              commentary: "Unresolved: " + resolution["commentary"],
+              depth: current_cq["depth"],
+              status: "unresolved"
+            }
+          end
         end
-      else
-        # No further symbol provided; mark as unresolved and do not include the multi-snippet code.
-        resolved_questions << {
-          question: current_cq["question"],
-          example: current_cq["example"],
-          workspace_symbol: current_cq["workspace_symbol"],
-          resolved_code: "",
-          commentary: "Unresolved: " + resolution["commentary"],
-          depth: current_cq["depth"],
-          status: "unresolved"
-        }
       end
+      threads.each(&:join)
+      depth = depth + 1
     end
 
     puts "preparing final review...."
