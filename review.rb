@@ -106,7 +106,21 @@ If there are no issues identified, simply state "no issues identified" for ISSUE
 Consider that both false negatives and excessive false positives are problematic. Too many concerns is noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
 PROMPT
 
-PARALLEL_AGENT_PROMPTS = [SYSTEM_PROMPT_PARANOID, SYSTEM_PROMPT_JUSTIFIER, SYSTEM_PROMPT_GENERIC]
+SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT = <<~PROMPT
+You are a principal level security engineer finalizing a security review for some Ruby on Rails application code. 
+You have well-balanced and strategic judgement, highlighting critical issues without fail, and providing prudent commentary on more ambiguous risks — 
+even making the choice to omit minor risks or concerns when you judge that they are not worth the time to analyze. 
+You will receive application code which you should rigorously anaylze for security problems, prioritizing the most severe potential problems as you reason. 
+
+In your output, separate ISSUES, CONCERNS, and COMMENTARY. 
+If there are no issues identified, simply state "no issues identified" for ISSUES.
+
+Consider that a false positive missing applications security issues could be devastating, particularly if they risk customer data 
+exposure either directly or via insecure practices. False positives are also problematic but at this stage, 
+prioritize capturing all relevant issues as we will strip out less relevant ones later. 
+PROMPT
+
+PARALLEL_AGENT_PROMPTS = [SYSTEM_PROMPT_PARANOID, SYSTEM_PROMPT_JUSTIFIER, SYSTEM_PROMPT_GENERIC, SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT]
 
 MODEL       = 'o3-mini'
 OUTPUT_FILE = 'results.txt'
@@ -130,13 +144,19 @@ rescue StandardError => e
   nil
 end
 
-def mixture_of_agents_final_review(client, code_inputs, filepath)
+def mixture_of_agents_final_review(client, code_inputs, file_alone, filepath)
   threads = PARALLEL_AGENT_PROMPTS.map do |prompt|
     Thread.new do
-      puts "executing agent..."
+      content = if prompt == SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT
+        puts "executing this agent on file alone..."
+        file_alone
+      else
+        puts "executing agent..."
+        code_inputs
+      end
       messages = [
         { role: "system", content: prompt },
-        { role: "user", content: code_inputs }
+        { role: "user", content: content }
       ]
       call_chat(client, messages, reasoning_effort: 'high')
     end
@@ -268,6 +288,8 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
     total_questions = 0
     depth = 0
 
+    TIMEOUT_SECONDS = 30  # adjust the timeout duration as needed
+
     while depth < MAX_DEPTH
       question_queue = question_queues[depth]
     
@@ -275,60 +297,71 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
       thread_results = question_queue.map do |entry|
         current_question, multi_snippet = entry
         Thread.new do
-          # Capture the current depth to use in this thread.
-          current_depth = depth
-          result = { resolved: nil, queued: nil }
+          begin
+            # Wrap the whole thread’s execution in a timeout block.
+            Timeout.timeout(TIMEOUT_SECONDS) do
+              # Capture current depth for use inside this thread.
+              current_depth = depth
+              result = { resolved: nil, queued: nil }
     
-          puts "\nProcessing Code Question: #{current_question['question']} (Symbol: #{current_question['workspace_symbol']})"
-          resolution = resolve_code_question(client, current_question, multi_snippet)
-          puts "\nResolution: #{resolution.inspect}"
+              puts "\nProcessing Code Question: #{current_question['question']} (Symbol: #{current_question['workspace_symbol']})"
+              resolution = resolve_code_question(client, current_question, multi_snippet)
+              puts "\nResolution: #{resolution.inspect}"
     
-          if resolution["status"] == "resolved"
-            result[:resolved] = {
-              question: current_question["question"],
-              example: current_question["example"],
-              workspace_symbol: current_question["workspace_symbol"],
-              resolved_code: resolution["resolved_code"],
-              commentary: resolution["commentary"],
-              status: "resolved"
-            }
-          elsif resolution["status"] == "unresolved" &&
-                !resolution["workspace_symbol"].to_s.strip.empty? &&
-                resolution["workspace_symbol"].to_s.strip != current_question["workspace_symbol"].to_s.strip
-            new_depth = current_depth + 1
-            if new_depth < MAX_DEPTH
-              new_question = {
-                "question" => "#{current_question["question"]}\n Follow-up for additional context: #{resolution['workspace_symbol']} \n(previous symbol: #{current_question['workspace_symbol']}, don't query this again)",
-                "example" => current_question["example"],
-                "workspace_symbol" => resolution["workspace_symbol"]
-              }
-              result[:queued] = [ new_question, lsp_client.get_multi_snippet(new_question["workspace_symbol"], 10) ]
-              puts "Queued new Code Question for symbol: #{resolution['workspace_symbol']} (Depth: #{new_depth})"
-            else
-              result[:resolved] = {
-                question: current_question["question"],
-                example: current_question["example"],
-                workspace_symbol: current_question["workspace_symbol"],
-                resolved_code: "",
-                commentary: "Max recursion depth reached. " + resolution["commentary"],
-                status: "unresolved"
-              }
+              if resolution["status"] == "resolved"
+                result[:resolved] = {
+                  question: current_question["question"],
+                  example: current_question["example"],
+                  workspace_symbol: current_question["workspace_symbol"],
+                  resolved_code: resolution["resolved_code"],
+                  commentary: resolution["commentary"],
+                  status: "resolved"
+                }
+              elsif resolution["status"] == "unresolved" &&
+                    !resolution["workspace_symbol"].to_s.strip.empty? &&
+                    resolution["workspace_symbol"].to_s.strip != current_question["workspace_symbol"].to_s.strip
+                new_depth = current_depth + 1
+                if new_depth < MAX_DEPTH
+                  new_question = {
+                    "question" => "#{current_question["question"]}\n Follow-up for additional context: #{resolution['workspace_symbol']} \n(previous symbol: #{current_question['workspace_symbol']}, don't query this again)",
+                    "example" => current_question["example"],
+                    "workspace_symbol" => resolution["workspace_symbol"]
+                  }
+                  result[:queued] = [ new_question, lsp_client.get_multi_snippet(new_question["workspace_symbol"], 10) ]
+                  puts "Queued new Code Question for symbol: #{resolution['workspace_symbol']} (Depth: #{new_depth})"
+                else
+                  result[:resolved] = {
+                    question: current_question["question"],
+                    example: current_question["example"],
+                    workspace_symbol: current_question["workspace_symbol"],
+                    resolved_code: "",
+                    commentary: "Max recursion depth reached. " + resolution["commentary"],
+                    status: "unresolved"
+                  }
+                end
+              else
+                result[:resolved] = {
+                  question: current_question["question"],
+                  example: current_question["example"],
+                  workspace_symbol: current_question["workspace_symbol"],
+                  resolved_code: "",
+                  commentary: "Unresolved: " + resolution["commentary"],
+                  status: "unresolved"
+                }
+              end
+    
+              # Return the successfully processed result.
+              result
             end
-          else
-            result[:resolved] = {
-              question: current_question["question"],
-              example: current_question["example"],
-              workspace_symbol: current_question["workspace_symbol"],
-              resolved_code: "",
-              commentary: "Unresolved: " + resolution["commentary"],
-              status: "unresolved"
-            }
+          rescue Timeout::Error => e
+            puts "Timeout error processing Code Question: #{current_question['question']} (#{current_question['workspace_symbol']}): #{e.message}"
+            "error getting result"
+          rescue StandardError => e
+            puts "Error processing Code Question: #{current_question['question']} (#{current_question['workspace_symbol']}) - #{e.message}"
+            "error getting result"
           end
-    
-          # Return this thread’s result
-          result
         end
-      end.map(&:value)  # .map(&:value) joins each thread and collects its result
+      end.map(&:value)  # waits for each thread to finish and collects its result.
     
       # Sequentially update shared collections based on the thread results.
       thread_results.each do |res|
@@ -366,7 +399,7 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
     
 
     if MOA == true
-      final_review_response = mixture_of_agents_final_review(client, final_user_content, filepath)
+      final_review_response = mixture_of_agents_final_review(client, final_user_content, file_content, filepath)
     else 
       final_messages = [
         { 'role' => 'system', 'content' => SYSTEM_PROMPT_FINAL_REVIEW },
