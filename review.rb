@@ -9,6 +9,8 @@ require_relative 'lsp_client'
 MAX_TOTAL_QUESTIONS = 20
 MAX_DEPTH = 2
 MOA = true
+TIMEOUT_SECONDS = 45  # adjust the timeout duration as needed
+
 
 # SYSTEM PROMPTS
 
@@ -125,6 +127,7 @@ PARALLEL_AGENT_PROMPTS = [SYSTEM_PROMPT_PARANOID, SYSTEM_PROMPT_JUSTIFIER, SYSTE
 MODEL       = 'o3-mini'
 OUTPUT_FILE = 'results.txt'
 AGENT_OUTPUT_FILE = 'agent_results.txt'
+QUESTIONS_OUTPUT_FILE = 'questions.txt'
 
 # Create an OpenAI client. (Make sure OPENAI_API_KEY is set in your environment.)
 client = OpenAI::Client.new(access_token: ENV.fetch('OPENAI_API_KEY'))
@@ -167,7 +170,11 @@ def mixture_of_agents_final_review(client, code_inputs, file_alone, filepath)
   multi_agent_result = ""
   responses.each_with_index do |response, i| 
     multi_agent_result += "Reviewer #{i+1}:\n"
-    multi_agent_result += response + "\n\n"
+    if response.nil?
+      multi_agent_result += "Error: No response from reviewer #{i+1}\n\n"
+    else 
+      multi_agent_result += response + "\n\n"
+    end
   end
 
   File.open(AGENT_OUTPUT_FILE, 'a') do |out_file|
@@ -288,7 +295,6 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
     total_questions = 0
     depth = 0
 
-    TIMEOUT_SECONDS = 30  # adjust the timeout duration as needed
 
     while depth < MAX_DEPTH
       question_queue = question_queues[depth]
@@ -365,6 +371,7 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
     
       # Sequentially update shared collections based on the thread results.
       thread_results.each do |res|
+        next if res.nil? || res == "error getting result"
         resolved_questions << res[:resolved] if res[:resolved]
         if res[:queued]
           new_question, multi_snippet = res[:queued]
@@ -413,6 +420,12 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
     File.open(OUTPUT_FILE, 'a') do |out_file|
       out_file.puts "Enhanced Security Review Results for File: #{filepath}"
       out_file.puts "=================================="
+      out_file.puts "\nFinal Security Review:"
+      out_file.puts final_review_response
+      out_file.puts "\n==================================\n"
+    end
+
+    File.open(QUESTIONS_OUTPUT_FILE, 'a') do |out_file|
       resolved_questions.each do |rq|
         out_file.puts "--------------------------------------------"
         out_file.puts "Code Question: #{rq[:question]}"
@@ -424,9 +437,6 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
           out_file.puts "Resolved Code:\n#{rq[:resolved_code]}"
         end
       end
-      out_file.puts "\nFinal Security Review:"
-      out_file.puts final_review_response
-      out_file.puts "\n==================================\n"
     end
 
     puts "Review results for #{filepath} saved to #{OUTPUT_FILE}. Took #{Time.now - start_time} seconds."
