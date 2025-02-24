@@ -8,6 +8,7 @@ require_relative 'lsp_client'
 # Global limits to prevent runaway recursive queries.
 MAX_TOTAL_QUESTIONS = 20
 MAX_DEPTH = 2
+MOA = true
 
 # SYSTEM PROMPTS
 
@@ -47,6 +48,59 @@ SYSTEM_PROMPT_FINAL_REVIEW = <<~PROMPT
   Consider that both serious false negatives and excessive false positives are problematic; too many concerns is noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
 PROMPT
 
+SYSTEM_PROMPT_PARANOID = <<~PROMPT
+You are an expert security code reviewer for Ruby on Rails applications. 
+You are particularly paranoid, speculating about potential problems or seeing more deeply into interactions than the average person. 
+This paranoia does come with commentary about likelihood, and it will be up to a downstream judge to decide whether your overly rigorous analysis is proportional to the problem at hand. 
+Leave no stone unturned, but do not create excessive noise in your output.
+
+In your output, separate ISSUES, CONCERNS, and COMMENTARY. If there are no issues identified, simply state "no issues identified" for ISSUES.
+PROMPT
+
+SYSTEM_PROMPT_JUSTIFIER = <<~PROMPT
+You are an expert principal engineer for Ruby on Rails applications assisting in a security review.
+You are adept at explaining or justifying decisions, but you do also recognize when something is a real issue.
+Part of the value that you add is by recognizing what might be flagged as a potential security issue, 
+but explaining how we could determine that it is not actually a problem - or observing that we do have enough information 
+to verify it is not a problem. You may also flag particularly interesting choices or things that deviate from Rails best practices, 
+but only if they have a potential security impact. 
+If something looks likely to cause an actual user facing bug or error, even if there is no direct security impact, 
+you should note that as an issue.
+
+In your output, separate ISSUES, CONCERNS, and COMMENTARY. 
+If there are no issues identified, simply state "no issues identified" for ISSUES.
+PROMPT
+
+SYSTEM_PROMPT_GENERIC = <<~PROMPT
+You are an expert security code reviewer for Ruby on Rails applications.
+
+Please review the following file and the associated resolved code snippets carefully.
+The resolved code snippets were retrieved based on questions that you generated earlier as they seemed contextually relevant for the review.
+
+In your output, separate ISSUES, CONCERNS, and COMMENTARY. If there are no issues identified, simply state "no issues identified" for ISSUES.
+
+Consider that both serious false negatives and excessive false positives are problematic; too many concerns is noise,
+but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
+PROMPT
+
+SYSTEM_PROMPT_PRINCIPAL = <<~PROMPT
+You are a principal level security engineer finalizing a security review for some Ruby on Rails application code. 
+You have well-balanced and strategic judgement, highlighting critical issues without fail, and providing prudent commentary on more ambiguous risks — 
+even making the choice to omit minor risks or concerns when you judge that they are not worth the time to analyze. 
+You will receive both application code and the commentary from previous reviewers. 
+You should review it all holistically, balancing the diverse opinions of your collaborators, 
+and conducting your own final review of the code to produce the ultimate output which will be reviewed by the decisionmaker. 
+Note that your job is not only to review what your colleagues have said; they might have missed something, 
+so also conduct your own expert review of the code and consider that for the final output. 
+
+In your output, separate ISSUES, CONCERNS, and COMMENTARY. 
+If there are no issues identified, simply state "no issues identified" for ISSUES.
+
+Consider that both false negatives and excessive false positives are problematic. Too many concerns is noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
+PROMPT
+
+PARALLEL_AGENT_PROMPTS = [SYSTEM_PROMPT_PARANOID, SYSTEM_PROMPT_JUSTIFIER, SYSTEM_PROMPT_GENERIC]
+
 MODEL       = 'o3-mini'
 OUTPUT_FILE = 'results.txt'
 
@@ -67,6 +121,7 @@ rescue StandardError => e
   puts "Error during API call: #{e.message}"
   nil
 end
+
 
 # Generates initial code questions (CSRs) for a file's content.
 def generate_code_questions(client, file_content)
@@ -105,6 +160,8 @@ def resolve_code_question(client, code_question, multi_snippet)
     { 'status' => 'error', 'commentary' => 'JSON parsing error', 'workspace_symbol' => '', 'resolved_code' => '' }
   end
 end
+
+
 
 # --- Main Script ---
 # 
@@ -244,14 +301,19 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
                          else
                            "Here is the file under review:\n\n#{file_content}\n\nBelow are the resolved code snippets:\n\n#{file_resolved_codes}\n\nand here are the unresolved questions:\n\n#{unresolved_questions}"
                          end
+    
 
-    final_messages = [
-      { 'role' => 'system', 'content' => SYSTEM_PROMPT_FINAL_REVIEW },
-      { 'role' => 'user', 'content' => final_user_content + "\n\nPlease provide your final security review." }
-    ]
-
-    puts "executing final review..."
-    final_review_response = call_chat(client, final_messages)
+    if MOA == true
+      final_review_response = mixture_of_agents_final_review(client, final_user_content)
+    else 
+      final_messages = [
+        { 'role' => 'system', 'content' => SYSTEM_PROMPT_FINAL_REVIEW },
+        { 'role' => 'user', 'content' => final_user_content + "\n\nPlease provide your final security review." }
+      ]
+      puts "executing final review..."
+      final_review_response = call_chat(client, final_messages)
+    end
+    
 
     File.open(OUTPUT_FILE, 'a') do |out_file|
       out_file.puts "Enhanced Security Review Results for File: #{filepath}"
