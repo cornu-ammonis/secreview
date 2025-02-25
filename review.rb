@@ -96,33 +96,65 @@ but missing a serious Rails application security issue could have dire consequen
 PROMPT
 
 SYSTEM_PROMPT_PRINCIPAL = <<~PROMPT
-You are a principal level security engineer finalizing a security review for some Ruby on Rails application code. 
-You have well-balanced and strategic judgement, highlighting critical issues without fail, and providing prudent commentary on more ambiguous risks — 
-even making the choice to omit minor risks or concerns when you judge that they are not worth the time to analyze. 
-You will receive both application code and the commentary from previous reviewers. 
-You should review it all holistically, balancing the diverse opinions of your collaborators, 
-and conducting your own final review of the code to produce the ultimate output which will be reviewed by the decisionmaker. 
-Note that your job is not only to review what your colleagues have said; they might have missed something, 
-so also conduct your own expert review of the code and consider that for the final output. 
+Act as a principal-level security engineer completing the final security review for a Ruby on Rails application. You possess expert knowledge of Rails security vulnerabilities (OWASP Top 10, Rails-specific issues, etc.) and strategic judgment.
 
-In your output, separate ISSUES, CONCERNS, and COMMENTARY. 
-If there are no issues identified, simply state "no issues identified" for ISSUES.
+You'll analyze:
+1. Application code snippets
+2. Commentary from previous reviewers
 
-Consider that both false negatives and excessive false positives are problematic. Too many concerns is noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
+Your task is to:
+- Conduct your own thorough review of the code
+- Consider previous reviewers' comments, resolving any conflicting opinions
+- Identify critical security vulnerabilities that others may have missed
+- Exercise judgment in filtering out low-impact issues that add noise
+
+Format your response with these clearly delineated sections:
+
+## ISSUES
+* List critical security vulnerabilities that must be addressed before deployment
+* For each, include: vulnerability name, affected code snippet, potential impact, and recommended fix
+* If none found, state "No critical security issues identified"
+
+## CONCERNS
+* List moderate-risk items or edge cases that warrant attention but aren't deployment blockers
+* Include specific code references and potential mitigations
+* Limit to 3-5 most important concerns to avoid creating noise
+
+## COMMENTARY
+* Provide holistic assessment of the application's security posture
+* Address significant points raised by previous reviewers
+* Note any architectural recommendations or patterns to improve security
+
+Balance thoroughness with practicality - both missing critical vulnerabilities and overwhelming with minor issues are equally problematic in a security review.
 PROMPT
 
 SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT = <<~PROMPT
-You are a principal level security engineer finalizing a security review for some Ruby on Rails application code. 
-You have well-balanced and strategic judgement, highlighting critical issues without fail, and providing prudent commentary on more ambiguous risks — 
-even making the choice to omit minor risks or concerns when you judge that they are not worth the time to analyze. 
-You will receive application code which you should rigorously anaylze for security problems, prioritizing the most severe potential problems as you reason. 
+Act as a principal-level security engineer conducting a comprehensive security review of Ruby on Rails application code. You possess expert knowledge of Rails security vulnerabilities, data protection requirements, and secure coding practices.
 
-In your output, separate ISSUES, CONCERNS, and COMMENTARY. 
-If there are no issues identified, simply state "no issues identified" for ISSUES.
+Your task is to:
+- Thoroughly analyze the provided application code for security vulnerabilities
+- Prioritize issues that could lead to customer data exposure or compromise
+- Apply strategic judgment to distinguish between critical, moderate, and minor concerns
+- Focus on identifying high-impact security problems without getting distracted by trivial issues
 
-Consider that a false positive missing applications security issues could be devastating, particularly if they risk customer data 
-exposure either directly or via insecure practices. False positives are also problematic but at this stage, 
-prioritize capturing all relevant issues as we will strip out less relevant ones later. 
+Format your response with these clearly delineated sections:
+
+## ISSUES
+* List critical security vulnerabilities that present significant risk to the application or customer data
+* For each, include: vulnerability type, affected code location, potential impact, and recommended remediation
+* If none found, state "No critical security issues identified"
+
+## CONCERNS
+* List moderate-risk vulnerabilities or security anti-patterns that warrant attention
+* Include specific code references and suggested improvements
+* Focus on meaningful concerns rather than theoretical edge cases
+
+## COMMENTARY
+* Provide overall assessment of the codebase's security posture
+* Note any architectural or systemic patterns that affect security
+* Suggest general security improvements if applicable
+
+In this review phase, prioritize identifying all legitimate security risks, particularly those affecting customer data protection. While false positives should be minimized, it's more important to ensure no significant vulnerabilities are overlooked. Less critical issues can be filtered in subsequent reviews.
 PROMPT
 
 PARALLEL_AGENT_PROMPTS = [SYSTEM_PROMPT_PARANOID, SYSTEM_PROMPT_JUSTIFIER, SYSTEM_PROMPT_GENERIC, SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT]
@@ -167,9 +199,9 @@ def sonnet_thinking_response(system, prompt, max_retries = 2)
         content: prompt
       }
     ],
-    max_tokens: 20000,
+    max_tokens: 30000,
     system: system,
-    thinking: { type: 'enabled', budget_tokens: 8000},
+    thinking: { type: 'enabled', budget_tokens: 16000},
     stream: false 
   }.to_json
   
@@ -269,12 +301,29 @@ def mixture_of_agents_final_review(client, code_inputs, original_file, filepath)
 
   puts "executing final review..."
 
-  final_messages = [
-        { 'role' => 'system', 'content' => SYSTEM_PROMPT_PRINCIPAL },
-        { 'role' => 'user', 'content' => code_inputs + "\n\n" + multi_agent_result + "\n\nPlease provide your final security review." }
-      ]
+  final_message_content = code_inputs + "\n\n" + multi_agent_result + "\n\nPlease provide your final security review."
+
+  threads = [:o3, :sonnet].map do |model|
+    Thread.new do 
+      if model == :sonnet
+        "Sonnet response: \n\n" + (sonnet_thinking_response(SYSTEM_PROMPT_PRINCIPAL, final_message_content) || "")
+      else
+        messages = [
+          { role: "system", content: SYSTEM_PROMPT_PRINCIPAL },
+          { role: "user", content: final_message_content }
+        ]
+        "o3 response: \n\n" + (call_chat(client, messages, reasoning_effort: 'high') || "")
+      end
+    end
+  end
+  # final_messages = [
+  #       { 'role' => 'system', 'content' => SYSTEM_PROMPT_PRINCIPAL },
+  #       { 'role' => 'user', 'content' => final_message_content }
+  #     ]
   
-  call_chat(client, final_messages)
+  # call_chat(client, final_messages)
+   
+  threads.map(&:value).join("\n")
 end
 
 # Generates initial code questions (CSRs) for a file's content.
