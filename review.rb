@@ -167,9 +167,9 @@ def sonnet_thinking_response(system, prompt, max_retries = 2)
         content: prompt
       }
     ],
-    max_tokens: 32000,
+    max_tokens: 20000,
     system: system,
-    thinking: { type: 'enabled', budget_tokens: 16000},
+    thinking: { type: 'enabled', budget_tokens: 8000},
     stream: false 
   }.to_json
   
@@ -179,6 +179,7 @@ def sonnet_thinking_response(system, prompt, max_retries = 2)
     
     if response.code.to_i == 200
       result = JSON.parse(response.body)
+      puts result.dig('usage')
       # Extract the text content from the complete response
       return result.dig('content', 1, 'text')
     else
@@ -243,7 +244,7 @@ def mixture_of_agents_final_review(client, code_inputs, original_file, filepath)
         call_chat(client, messages, reasoning_effort: 'high')
       end
 
-      "Reviewer: #{agent[:name]}\n" + model_response
+      "Reviewer: #{agent[:name]}\n" + model_response unless model_response.nil?
     end
   end
   
