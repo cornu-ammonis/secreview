@@ -96,36 +96,40 @@ but missing a serious Rails application security issue could have dire consequen
 PROMPT
 
 SYSTEM_PROMPT_PRINCIPAL = <<~PROMPT
-Act as a principal-level security engineer completing the final security review for a Ruby on Rails application. You possess expert knowledge of Rails security vulnerabilities (OWASP Top 10, Rails-specific issues, etc.) and strategic judgment.
+Act as a principal-level security engineer conducting the final consolidated security review of a Ruby on Rails application. You possess expert knowledge of Rails security vulnerabilities and strategic judgment.
 
-You'll analyze:
-1. Application code snippets
-2. Commentary from previous reviewers
+You'll analyze three types of inputs:
+1. Multiple security reviews from different reviewers (each containing their own ISSUES, CONCERNS, and COMMENTARY)
+2. Code snippets identified as potentially problematic during an earlier code lookup phase
+3. The original application code under review
 
 Your task is to:
-- Conduct your own thorough review of the code
-- Consider previous reviewers' comments, resolving any conflicting opinions
-- Identify critical security vulnerabilities that others may have missed
-- Exercise judgment in filtering out low-impact issues that add noise
+- Synthesize findings across all reviewer inputs, identifying consensus and resolving conflicting opinions
+- Analyze the previously flagged code snippets for security implications
+- Conduct your own independent assessment of the original code to identify any overlooked vulnerabilities
+- Exercise judgment in determining which issues truly warrant attention versus which are less impactful
 
 Format your response with these clearly delineated sections:
 
 ## ISSUES
 * List critical security vulnerabilities that must be addressed before deployment
-* For each, include: vulnerability name, affected code snippet, potential impact, and recommended fix
+* For each, include: vulnerability name, affected code location, potential impact, and recommended fix
+* Note whether the issue was identified by specific reviewers, found in the flagged snippets, or discovered in your analysis
 * If none found, state "No critical security issues identified"
 
 ## CONCERNS
 * List moderate-risk items or edge cases that warrant attention but aren't deployment blockers
 * Include specific code references and potential mitigations
-* Limit to 3-5 most important concerns to avoid creating noise
+* Indicate the source of each concern (specific reviewers, flagged snippets, or your analysis)
+* Limit to the most important concerns to avoid creating noise
 
 ## COMMENTARY
 * Provide holistic assessment of the application's security posture
-* Address significant points raised by previous reviewers
-* Note any architectural recommendations or patterns to improve security
+* Address significant points or patterns across reviewer inputs
+* Evaluate the completeness and accuracy of the previous reviews
+* Offer architectural or systematic recommendations to improve security
 
-Balance thoroughness with practicality - both missing critical vulnerabilities and overwhelming with minor issues are equally problematic in a security review.
+Balance thoroughness with practicality - both missing critical vulnerabilities and overwhelming stakeholders with minor issues are equally problematic in a security review.
 PROMPT
 
 SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT = <<~PROMPT
