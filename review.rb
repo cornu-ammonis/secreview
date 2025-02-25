@@ -3,6 +3,9 @@
 require 'openai'
 require 'json'
 require 'find'
+require 'net/http'
+require 'json'
+require 'uri'
 require_relative 'lsp_client'
 
 # Global limits to prevent runaway recursive queries.
@@ -124,10 +127,59 @@ PROMPT
 
 PARALLEL_AGENT_PROMPTS = [SYSTEM_PROMPT_PARANOID, SYSTEM_PROMPT_JUSTIFIER, SYSTEM_PROMPT_GENERIC, SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT]
 
+PARALLEL_AGENTS = [
+  {prompt: SYSTEM_PROMPT_PARANOID, name: "Paranoid", context: true}, 
+  {prompt: SYSTEM_PROMPT_JUSTIFIER, name: "Justifier", context: true}, 
+  {prompt: SYSTEM_PROMPT_GENERIC, name: "Generic", context: true},
+  {prompt: SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT, name: "No context", context: false},
+  {prompt: SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT, name: "No context sonnet", context: false, model: :sonnet},
+  {prompt: SYSTEM_PROMPT_GENERIC, name: "Generic sonnet", context: true, model: :sonnet},
+  {prompt: SYSTEM_PROMPT_PARANOID, name: "Paranoid sonnet", context: true, model: :sonnet}, 
+
+]
+
 MODEL       = 'o3-mini'
 OUTPUT_FILE = 'results.txt'
 AGENT_OUTPUT_FILE = 'agent_results.txt'
 QUESTIONS_OUTPUT_FILE = 'questions.txt'
+
+SONNET_API_URL = 'http://localhost:9292/v1/messages'
+
+def sonnet_thinking_response(system, prompt)
+  uri = URI(SONNET_API_URL)
+  http = Net::HTTP.new(uri.host, uri.port)
+  
+  # Set SSL if the API is using HTTPS
+  http.use_ssl = (uri.scheme == 'https')
+  
+  request = Net::HTTP::Post.new(uri)
+  request['Content-Type'] = 'application/json'
+  
+  request.body = {
+    model: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
+    messages: [
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+    max_tokens: 32000,
+    system: system,
+    thinking: { type: 'enabled', budget_tokens: 16000},
+    stream: false 
+  }.to_json
+  
+  response = http.request(request)
+  
+  if response.code.to_i == 200
+    result = JSON.parse(response.body)
+    # Extract the text content from the complete response
+    return result.dig('content', 1, 'text')
+  else
+    puts "Error: #{response.code} - #{response.body}"
+    return nil
+  end
+end
 
 # Create an OpenAI client. (Make sure OPENAI_API_KEY is set in your environment.)
 client = OpenAI::Client.new(access_token: ENV.fetch('OPENAI_API_KEY'))
@@ -148,9 +200,10 @@ rescue StandardError => e
 end
 
 def mixture_of_agents_final_review(client, code_inputs, original_file, filepath)
-  threads = PARALLEL_AGENT_PROMPTS.map do |prompt|
+  threads = PARALLEL_AGENTS.map do |agent|
     Thread.new do
-      content = if prompt == SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT
+      prompt = agent[:prompt]
+      content = if agent[:context] == false
         # the idea here is to have one agent operate on only the original file, to mitigate 
         # the effect of becoming distracted by the resolved/unresolved questions and missing issues
         # that are clear from the original file alone.
@@ -160,11 +213,18 @@ def mixture_of_agents_final_review(client, code_inputs, original_file, filepath)
         puts "executing agent..."
         code_inputs
       end
-      messages = [
-        { role: "system", content: prompt },
-        { role: "user", content: content }
-      ]
-      call_chat(client, messages, reasoning_effort: 'high')
+
+      model_response = if agent[:model] == :sonnet
+        sonnet_thinking_response(prompt, content)
+      else
+        messages = [
+          { role: "system", content: prompt },
+          { role: "user", content: content }
+        ]
+        call_chat(client, messages, reasoning_effort: 'high')
+      end
+
+      "Reviewer: #{agent[:name]}\n" + model_response
     end
   end
   
@@ -204,7 +264,7 @@ def generate_code_questions(client, file_content)
     { 'role' => 'user',
       'content' => "Please analyze the following Ruby code and output any Code Search Requests (CSRs) as described. Include for each CSR a 'question', an 'example', and a 'workspace_symbol'. Do not include any extra text - only output valid JSON.\n\n#{file_content}" }
   ]
-  response_text = call_chat(client, messages, reasoning_effort: 'high')
+  response_text = call_chat(client, messages, reasoning_effort: 'medium')
   begin
     cq_array = JSON.parse(response_text)
     return [] unless cq_array.is_a?(Array)
