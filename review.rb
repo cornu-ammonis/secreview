@@ -145,12 +145,16 @@ QUESTIONS_OUTPUT_FILE = 'questions.txt'
 
 SONNET_API_URL = 'http://localhost:9292/v1/messages'
 
-def sonnet_thinking_response(system, prompt)
+def sonnet_thinking_response(system, prompt, max_retries = 2)
   uri = URI(SONNET_API_URL)
   http = Net::HTTP.new(uri.host, uri.port)
   
   # Set SSL if the API is using HTTPS
   http.use_ssl = (uri.scheme == 'https')
+  
+  # Configure longer timeouts (in seconds)
+  http.open_timeout = 30  # Time to open the connection
+  http.read_timeout = 150 # Time to read the response (2.5 minutes)
   
   request = Net::HTTP::Post.new(uri)
   request['Content-Type'] = 'application/json'
@@ -169,14 +173,29 @@ def sonnet_thinking_response(system, prompt)
     stream: false 
   }.to_json
   
-  response = http.request(request)
-  
-  if response.code.to_i == 200
-    result = JSON.parse(response.body)
-    # Extract the text content from the complete response
-    return result.dig('content', 1, 'text')
-  else
-    puts "Error: #{response.code} - #{response.body}"
+  retries = 0
+  begin
+    response = http.request(request)
+    
+    if response.code.to_i == 200
+      result = JSON.parse(response.body)
+      # Extract the text content from the complete response
+      return result.dig('content', 1, 'text')
+    else
+      puts "Error: #{response.code} - #{response.body}"
+      return nil
+    end
+  rescue Net::ReadTimeout => e
+    retries += 1
+    if retries <= max_retries
+      puts "Timeout occurred (attempt #{retries}/#{max_retries}). Retrying..."
+      retry
+    else
+      puts "Failed after #{max_retries} attempts: #{e.message}"
+      return nil
+    end
+  rescue StandardError => e
+    puts "Error occurred: #{e.class} - #{e.message}"
     return nil
   end
 end
