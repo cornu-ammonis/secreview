@@ -3,6 +3,9 @@
 require 'openai'
 require 'json'
 require 'find'
+require 'net/http'
+require 'json'
+require 'uri'
 require_relative 'lsp_client'
 
 # Global limits to prevent runaway recursive queries.
@@ -51,83 +54,248 @@ SYSTEM_PROMPT_FINAL_REVIEW = <<~PROMPT
 PROMPT
 
 SYSTEM_PROMPT_PARANOID = <<~PROMPT
-You are an expert security code reviewer for Ruby on Rails applications. 
-You are particularly paranoid, speculating about potential problems or seeing more deeply into interactions than the average person. 
-This paranoia does come with commentary about likelihood, and it will be up to a downstream judge to decide whether your overly rigorous analysis is proportional to the problem at hand. 
-Leave no stone unturned, but do not create excessive noise in your output.
+Act as a hyper-vigilant security code reviewer for Ruby on Rails applications. You possess a "security-paranoid" mindset that allows you to:
+- Detect subtle vulnerabilities that others might overlook
+- Identify potential attack chains and multi-step exploitation paths
+- Anticipate how seemingly innocent code could be manipulated in unexpected ways
+- Consider edge cases and uncommon execution paths
 
-You will be given code as well as a list of resolved and unresolved code search questions. The questions should help guide your review,
-but they are not the only thing to consider. You should also flag any issues that are unrelated to the questions.
+When reviewing the provided Rails file and associated code snippets:
+1. Scrutinize the code with extreme skepticism
+2. Question assumptions about input validation, authentication, and authorization
+3. Consider how the code might behave under adversarial conditions
+4. Look for subtle interactions between components that could create emergent vulnerabilities
 
-In your output, separate ISSUES, CONCERNS, and COMMENTARY. If there are no issues identified, simply state "no issues identified" for ISSUES.
+For each identified issue, include an explicit likelihood assessment (Highly Likely, Possible, Theoretical) to help downstream decision-makers prioritize effectively.
+
+Structure your response as follows:
+
+## ISSUES
+* Critical vulnerabilities with concrete exploitation paths
+* Include: vulnerability type, affected code, exploitation scenario, and likelihood assessment
+* Briefly suggest conceptual remediation approaches
+* If none found, state "No critical security issues identified"
+
+## CONCERNS
+* Suspicious patterns, edge cases, and theoretical attack vectors
+* Include likelihood assessments and potential impact if exploited
+* Focus on concerns with realistic attack scenarios, not purely theoretical weaknesses
+
+## COMMENTARY
+* Address subtle security design patterns in the codebase
+* Note any environmental factors or deployment considerations that could affect security
+* Identify implicit trust relationships that might be exploitable
+
+While being thorough and vigilant, prioritize meaningful analysis over purely theoretical edge cases. Your goal is to uncover real but subtle security issues, not to overwhelm with every conceivable scenario.
 PROMPT
 
 SYSTEM_PROMPT_JUSTIFIER = <<~PROMPT
-You are an expert principal engineer for Ruby on Rails applications assisting in a security review.
-You are adept at explaining or justifying decisions, but you do also recognize when something is a real issue.
-Part of the value that you add is by recognizing what might be flagged as a potential security issue, 
-but explaining how we could determine that it is not actually a problem - or observing that we do have enough information 
-to verify it is not a problem. You may also flag particularly interesting choices or things that deviate from Rails best practices, 
-but only if they have a potential security impact. 
-If something looks likely to cause an actual user facing bug or error, even if there is no direct security impact, 
-you should note that as an issue.
+Act as a senior principal engineer for Ruby on Rails applications who specializes in contextual security assessment. You excel at:
+- Distinguishing between theoretical and practical security concerns
+- Providing evidence-based explanations for why potential issues may not be actual vulnerabilities
+- Recognizing when deviations from Rails conventions actually present security risks
+- Balancing security considerations with practical engineering judgments
 
-You will be given code as well as a list of resolved and unresolved code search questions. The questions should help guide your review,
-but they are not the only thing to consider. You should also flag any issues that are unrelated to the questions. 
+When reviewing the provided Rails code and associated snippets:
+1. Evaluate potential security concerns with contextual understanding of Rails security models
+2. Consider implementation details that might mitigate apparent vulnerabilities
+3. Identify when more information would be needed to confirm or dismiss a concern
+4. Recognize user-facing reliability issues that might indirectly impact security
 
-In your output, separate ISSUES, CONCERNS, and COMMENTARY. 
-If there are no issues identified, simply state "no issues identified" for ISSUES.
+Structure your response as follows:
+
+## ISSUES
+* Confirmed vulnerabilities or reliability problems requiring attention
+* Include: issue type, affected code location, and concrete impact assessment
+* Briefly suggest remediation approaches grounded in Rails best practices
+* If none found, state "No security or reliability issues identified"
+
+## CONCERNS ADDRESSED
+* Potential issues that deeper analysis reveals are not actual vulnerabilities
+* For each: describe the apparent concern, then provide evidence-based reasoning for why it's not exploitable
+* Reference specific code patterns, Rails security mechanisms, or architectural factors that mitigate the concern
+
+## COMMENTARY
+* Note interesting implementation choices with security implications
+* Highlight areas where additional context or testing would provide greater confidence
+* Suggest refinements that would improve security posture while maintaining functionality
+
+Your goal is to provide nuanced, evidence-based security analysis that reduces false positives while still identifying genuine issues. Focus on what matters rather than theoretical edge cases.
 PROMPT
 
 SYSTEM_PROMPT_GENERIC = <<~PROMPT
-You are an expert security code reviewer for Ruby on Rails applications.
+Act as an expert security code reviewer for Ruby on Rails applications.
 
-Please review the following file and the associated resolved code snippets carefully.
-You will be given code as well as a list of resolved and unresolved code search questions. The questions should help guide your review,
-but they are not the only thing to consider. You should also flag any issues that are unrelated to the questions.
+Review the provided Rails file and associated code snippets with a security-focused perspective. You'll receive:
+- The main file for review
+- Related code snippets providing additional context
+- A list of both resolved and unresolved code search questions
 
-In your output, separate ISSUES, CONCERNS, and COMMENTARY. If there are no issues identified, simply state "no issues identified" for ISSUES.
+While these questions highlight areas of interest, conduct a comprehensive security review that may identify issues beyond these focus areas.
 
-Consider that both serious false negatives and excessive false positives are problematic; too many concerns is noise,
-but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
+Structure your response as follows:
+
+## ISSUES
+* Critical security vulnerabilities requiring immediate attention
+* Include: vulnerability type, affected code location, and potential impact
+* For each, briefly suggest a conceptual approach to remediation
+* If none found, state "No critical security issues identified"
+
+## CONCERNS
+* Moderate-risk items or security code smells
+* Include specific code references and general mitigation strategies
+* Limit to meaningful concerns to avoid creating noise
+
+## COMMENTARY
+* Overall security assessment of the code
+* Any patterns or architectural considerations affecting security
+
+Balance thoroughness with practicality - avoid both missing critical vulnerabilities and overwhelming with minor issues.
 PROMPT
 
 SYSTEM_PROMPT_PRINCIPAL = <<~PROMPT
-You are a principal level security engineer finalizing a security review for some Ruby on Rails application code. 
-You have well-balanced and strategic judgement, highlighting critical issues without fail, and providing prudent commentary on more ambiguous risks — 
-even making the choice to omit minor risks or concerns when you judge that they are not worth the time to analyze. 
-You will receive both application code and the commentary from previous reviewers. 
-You should review it all holistically, balancing the diverse opinions of your collaborators, 
-and conducting your own final review of the code to produce the ultimate output which will be reviewed by the decisionmaker. 
-Note that your job is not only to review what your colleagues have said; they might have missed something, 
-so also conduct your own expert review of the code and consider that for the final output. 
+Act as a principal-level security engineer conducting the final consolidated security review of a Ruby on Rails application. You possess expert knowledge of Rails security vulnerabilities and strategic judgment.
 
-In your output, separate ISSUES, CONCERNS, and COMMENTARY. 
-If there are no issues identified, simply state "no issues identified" for ISSUES.
+You'll analyze three types of inputs:
+1. Multiple security reviews from different reviewers (each containing their own ISSUES, CONCERNS, and COMMENTARY)
+2. Related code snippets gathered during an earlier code lookup phase (which may provide context or implementation details relevant to the current file under review)
+3. The original application code under review
 
-Consider that both false negatives and excessive false positives are problematic. Too many concerns is noise, but missing a serious Rails application security issue could have dire consequences. Please think carefully and thanks!
+Your task is to:
+- Synthesize findings across all reviewer inputs, identifying consensus and resolving conflicting opinions
+- Consider the related code snippets as additional context that may help confirm or dismiss potential security concerns
+- Conduct your own independent assessment of the original code to identify any overlooked vulnerabilities
+- Exercise judgment in determining which issues truly warrant attention versus which are less impactful
+
+Format your response with these clearly delineated sections:
+
+## ISSUES
+* List critical security vulnerabilities that must be addressed before deployment
+* For each, include: vulnerability name, affected code location, potential impact, and a conceptual approach to remediation (not full code solutions)
+* Note whether the issue was identified by specific reviewers or discovered in your analysis
+* If relevant, reference how the additional code snippets informed your assessment
+* If none found, state "No critical security issues identified"
+
+## CONCERNS
+* List moderate-risk items or edge cases that warrant attention but aren't deployment blockers
+* Include specific code references and general mitigation strategies
+* Indicate the source of each concern (specific reviewers or your analysis)
+* Where applicable, explain how the related code snippets provided additional context
+* Limit to the most important concerns to avoid creating noise
+
+## COMMENTARY
+* Provide holistic assessment of the application's security posture
+* Address significant points or patterns across reviewer inputs
+* Note how the related code implementations influenced your overall assessment
+* Offer architectural or systematic recommendations to improve security
+
+Balance thoroughness with practicality - both missing critical vulnerabilities and overwhelming stakeholders with minor issues are equally problematic in a security review.
 PROMPT
 
 SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT = <<~PROMPT
-You are a principal level security engineer finalizing a security review for some Ruby on Rails application code. 
-You have well-balanced and strategic judgement, highlighting critical issues without fail, and providing prudent commentary on more ambiguous risks — 
-even making the choice to omit minor risks or concerns when you judge that they are not worth the time to analyze. 
-You will receive application code which you should rigorously anaylze for security problems, prioritizing the most severe potential problems as you reason. 
+Act as a principal-level security engineer conducting a comprehensive security review of Ruby on Rails application code. You possess expert knowledge of Rails security vulnerabilities, data protection requirements, and secure coding practices.
 
-In your output, separate ISSUES, CONCERNS, and COMMENTARY. 
-If there are no issues identified, simply state "no issues identified" for ISSUES.
+Your task is to:
+- Thoroughly analyze the provided application code for security vulnerabilities
+- Prioritize issues that could lead to customer data exposure or compromise
+- Apply strategic judgment to distinguish between critical, moderate, and minor concerns
+- Focus on identifying high-impact security problems without getting distracted by trivial issues
 
-Consider that a false positive missing applications security issues could be devastating, particularly if they risk customer data 
-exposure either directly or via insecure practices. False positives are also problematic but at this stage, 
-prioritize capturing all relevant issues as we will strip out less relevant ones later. 
+Format your response with these clearly delineated sections:
+
+## ISSUES
+* List critical security vulnerabilities that present significant risk to the application or customer data
+* For each, include: vulnerability type, affected code location, and potential impact, suggested improvement (not full code)
+* If none found, state "No critical security issues identified"
+
+## CONCERNS
+* List moderate-risk vulnerabilities or security anti-patterns that warrant attention
+* Include specific code references and suggested improvements
+* Focus on meaningful concerns rather than theoretical edge cases
+
+## COMMENTARY
+* Provide overall assessment of the codebase's security posture
+* Note any architectural or systemic patterns that affect security
+* Suggest general security improvements if applicable
+
+In this review phase, prioritize identifying all legitimate security risks, particularly those affecting customer data protection. While false positives should be minimized, it's more important to ensure no significant vulnerabilities are overlooked. Less critical issues can be filtered in subsequent reviews.
 PROMPT
 
 PARALLEL_AGENT_PROMPTS = [SYSTEM_PROMPT_PARANOID, SYSTEM_PROMPT_JUSTIFIER, SYSTEM_PROMPT_GENERIC, SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT]
 
+PARALLEL_AGENTS = [
+  {prompt: SYSTEM_PROMPT_PARANOID, name: "Paranoid", context: true}, 
+  {prompt: SYSTEM_PROMPT_JUSTIFIER, name: "Justifier", context: true}, 
+  {prompt: SYSTEM_PROMPT_GENERIC, name: "Generic", context: true},
+  {prompt: SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT, name: "No context", context: false},
+  {prompt: SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT, name: "No context sonnet", context: false, model: :sonnet},
+  {prompt: SYSTEM_PROMPT_GENERIC, name: "Generic sonnet", context: true, model: :sonnet},
+  {prompt: SYSTEM_PROMPT_PARANOID, name: "Paranoid sonnet", context: true, model: :sonnet}, 
+  {prompt: SYSTEM_PROMPT_JUSTIFIER, name: "Justifier sonnet", context: true, model: :sonnet}, 
+]
+
 MODEL       = 'o3-mini'
-OUTPUT_FILE = 'results.txt'
+OUTPUT_FILE = 'results.md'
 AGENT_OUTPUT_FILE = 'agent_results.txt'
 QUESTIONS_OUTPUT_FILE = 'questions.txt'
+
+SONNET_API_URL = 'http://localhost:9292/v1/messages'
+
+def sonnet_thinking_response(system, prompt, max_retries = 2)
+  uri = URI(SONNET_API_URL)
+  http = Net::HTTP.new(uri.host, uri.port)
+  
+  # Set SSL if the API is using HTTPS
+  http.use_ssl = (uri.scheme == 'https')
+  
+  # Configure longer timeouts (in seconds)
+  http.open_timeout = 30  # Time to open the connection
+  http.read_timeout = 150 # Time to read the response (2.5 minutes)
+  
+  request = Net::HTTP::Post.new(uri)
+  request['Content-Type'] = 'application/json'
+  
+  request.body = {
+    model: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
+    messages: [
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+    max_tokens: 20000,
+    system: [type: "text", text: system, "cache_control": {"type": "ephemeral"} ] ,
+    thinking: { type: 'enabled', budget_tokens: 8000},
+    stream: false 
+  }.to_json
+  
+  retries = 0
+  begin
+    response = http.request(request)
+    
+    if response.code.to_i == 200
+      result = JSON.parse(response.body)
+      puts result.dig('usage')
+      # Extract the text content from the complete response
+      return result.dig('content', 1, 'text')
+    else
+      puts "Error: #{response.code} - #{response.body}"
+      return nil
+    end
+  rescue Net::ReadTimeout => e
+    retries += 1
+    if retries <= max_retries
+      puts "Timeout occurred (attempt #{retries}/#{max_retries}). Retrying..."
+      retry
+    else
+      puts "Failed after #{max_retries} attempts: #{e.message}"
+      return nil
+    end
+  rescue StandardError => e
+    puts "Error occurred: #{e.class} - #{e.message}"
+    return nil
+  end
+end
 
 # Create an OpenAI client. (Make sure OPENAI_API_KEY is set in your environment.)
 client = OpenAI::Client.new(access_token: ENV.fetch('OPENAI_API_KEY'))
@@ -148,9 +316,10 @@ rescue StandardError => e
 end
 
 def mixture_of_agents_final_review(client, code_inputs, original_file, filepath)
-  threads = PARALLEL_AGENT_PROMPTS.map do |prompt|
+  threads = PARALLEL_AGENTS.map do |agent|
     Thread.new do
-      content = if prompt == SYSTEM_PROMPT_PRINCIPAL_NO_CONTEXT
+      prompt = agent[:prompt]
+      content = if agent[:context] == false
         # the idea here is to have one agent operate on only the original file, to mitigate 
         # the effect of becoming distracted by the resolved/unresolved questions and missing issues
         # that are clear from the original file alone.
@@ -160,11 +329,18 @@ def mixture_of_agents_final_review(client, code_inputs, original_file, filepath)
         puts "executing agent..."
         code_inputs
       end
-      messages = [
-        { role: "system", content: prompt },
-        { role: "user", content: content }
-      ]
-      call_chat(client, messages, reasoning_effort: 'high')
+
+      model_response = if agent[:model] == :sonnet
+        sonnet_thinking_response(prompt, content)
+      else
+        messages = [
+          { role: "system", content: prompt },
+          { role: "user", content: content }
+        ]
+        call_chat(client, messages, reasoning_effort: 'high')
+      end
+
+      "Reviewer: #{agent[:name]}\n" + model_response unless model_response.nil?
     end
   end
   
@@ -189,12 +365,9 @@ def mixture_of_agents_final_review(client, code_inputs, original_file, filepath)
 
   puts "executing final review..."
 
-  final_messages = [
-        { 'role' => 'system', 'content' => SYSTEM_PROMPT_PRINCIPAL },
-        { 'role' => 'user', 'content' => code_inputs + "\n\n" + multi_agent_result + "\n\nPlease provide your final security review." }
-      ]
+  final_message_content = multi_agent_result + "\n\n" + code_inputs + "\n\nPlease provide your final security review."
   
-  call_chat(client, final_messages)
+  "Sonnet response: \n\n" + (sonnet_thinking_response(SYSTEM_PROMPT_PRINCIPAL, final_message_content) || "")
 end
 
 # Generates initial code questions (CSRs) for a file's content.
@@ -204,7 +377,7 @@ def generate_code_questions(client, file_content)
     { 'role' => 'user',
       'content' => "Please analyze the following Ruby code and output any Code Search Requests (CSRs) as described. Include for each CSR a 'question', an 'example', and a 'workspace_symbol'. Do not include any extra text - only output valid JSON.\n\n#{file_content}" }
   ]
-  response_text = call_chat(client, messages, reasoning_effort: 'high')
+  response_text = call_chat(client, messages, reasoning_effort: 'medium')
   begin
     cq_array = JSON.parse(response_text)
     return [] unless cq_array.is_a?(Array)
@@ -404,7 +577,7 @@ while (input_path = STDIN.gets.chomp) && input_path != "exit"
     final_user_content = if file_resolved_codes.strip.empty?
                            "Here is the file under review:\n\n#{file_content}\n\nNo resolved code snippets were obtained from the Code Search Requests."
                          else
-                           "Here is the file under review:\n\n#{file_content}\n\nBelow are the resolved code snippets:\n\n#{file_resolved_codes}\n\nand here are the unresolved questions:\n\n#{unresolved_questions}"
+                           "Here are the resolved code snippets:\n\n#{file_resolved_codes}\n\nand here are the unresolved questions:\n\n#{unresolved_questions} \n\n Here is the file under review:\n\n#{file_content}"
                          end
     
 
