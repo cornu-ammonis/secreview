@@ -11,6 +11,8 @@
 /test/version_tmp/
 /tmp/
 results.txt
+results.md
+test.md
 
 # Used by dotenv library to load environment variables.
 # .env
