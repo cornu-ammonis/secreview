@@ -2,6 +2,10 @@
 
 SecReview is a tool for automated security code review of Ruby on Rails applications. It uses the Language Server Protocol (LSP) and OpenAI API to analyze code, identify potential security issues, and provide detailed reports.
 
+## Diagram
+
+<img width="504" alt="Screenshot 2025-02-09 at 3 40 25 PM" src="https://github.com/user-attachments/assets/3dd5cb04-61fd-4bef-9373-2ed7a2845147" />
+
 ## Features
 
 - Automated security code review for Ruby on Rails applications
@@ -42,10 +46,6 @@ SecReview is a tool for automated security code review of Ruby on Rails applicat
 - Run `ruby ./review.rb [project-root-directory]`
 - Provide a target file or directory to begin review 
 - See results in `results.txt`, additional details in `agent_results.txt` and `questions.txt`
-
-## Example Output
-
-<img width="504" alt="Screenshot 2025-02-09 at 3 40 25 PM" src="https://github.com/user-attachments/assets/3dd5cb04-61fd-4bef-9373-2ed7a2845147" />
 
 ## Configuration
 
