@@ -366,28 +366,6 @@ def mixture_of_agents_final_review(client, code_inputs, original_file, filepath)
   puts "executing final review..."
 
   final_message_content = multi_agent_result + "\n\n" + code_inputs + "\n\nPlease provide your final security review."
-
-  # threads = [:o3, :sonnet].map do |model|
-  #   Thread.new do 
-  #     if model == :sonnet
-  #       "Sonnet response: \n\n" + (sonnet_thinking_response(SYSTEM_PROMPT_PRINCIPAL, final_message_content) || "")
-  #     else
-  #       messages = [
-  #         { role: "system", content: SYSTEM_PROMPT_PRINCIPAL },
-  #         { role: "user", content: final_message_content }
-  #       ]
-  #       "o3 response: \n\n" + (call_chat(client, messages, reasoning_effort: 'high') || "")
-  #     end
-  #   end
-  # end
-  # final_messages = [
-  #       { 'role' => 'system', 'content' => SYSTEM_PROMPT_PRINCIPAL },
-  #       { 'role' => 'user', 'content' => final_message_content }
-  #     ]
-  
-  # call_chat(client, final_messages)
-   
-  #threads.map(&:value).join("\n")
   
   "Sonnet response: \n\n" + (sonnet_thinking_response(SYSTEM_PROMPT_PRINCIPAL, final_message_content) || "")
 end
